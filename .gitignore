@@ -15,6 +15,10 @@ gen/
 # Gradle files
 .gradle/
 build/
+.idea/workspace.xml
+.idea/libraries
+.idea/dictionaries
+
 
 # Local configuration file (sdk path, etc)
 local.properties
@@ -24,3 +28,6 @@ proguard/
 
 # Log Files
 *.log
+
+# OSX specific files
+.DS_Store
