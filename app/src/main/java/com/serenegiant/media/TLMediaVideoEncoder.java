@@ -136,32 +136,23 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
 	}
 
 	@Override
-	public void prepare() throws IOException {
+	protected MediaFormat internal_prepare() throws IOException {
 		if (DEBUG) Log.i(TAG, "prepare: ");
         mIsEOS = false;
 
         final MediaCodecInfo videoCodecInfo = selectVideoCodec(MIME_TYPE);
         if (videoCodecInfo == null) {
             Log.e(TAG, "Unable to find an appropriate codec for " + MIME_TYPE);
-            return;
+            return null;
         }
 		if (DEBUG) Log.i(TAG, "selected codec: " + videoCodecInfo.getName());
 
-        mFormat = MediaFormat.createVideoFormat(MIME_TYPE, mWidth, mHeight);
-		configure(mFormat);
-        // get Surface for encoder input
-        // this method only can call between #configure and #start_from_encoder
-        if (DEBUG) Log.i(TAG, "prepare finishing");
-        if (mListener != null) {
-        	try {
-        		mListener.onPrepared(this);
-        	} catch (Exception e) {
-        		Log.e(TAG, "prepare:", e);
-        	}
-        }
+        final MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, mWidth, mHeight);
+        if (DEBUG) Log.i(TAG, "prepare finishing:format=" + format);
+		return format;
 	}
 
-	protected void configure(final MediaFormat format) throws IOException {
+	protected void internal_configure(final MediaFormat format) throws IOException {
 		format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);	// API >= 18
 		format.setInteger(MediaFormat.KEY_BIT_RATE, mBitRate > 0 ? mBitRate : calcBitRate());
 		format.setInteger(MediaFormat.KEY_FRAME_RATE, mFrameRate);
@@ -178,8 +169,8 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
 	}
 
 	@Override
-    protected void release() {
-		if (DEBUG) Log.i(TAG, "release: ");
+    protected void internal_release() {
+		if (DEBUG) Log.i(TAG, "internal_release: ");
 		if (mSurface != null) {
 			mSurface.release();
 			mSurface = null;
@@ -188,7 +179,7 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
 			mRenderHandler.release();
 			mRenderHandler = null;
 		}
-		super.release();
+		super.internal_release();
 	}
 
 	/**

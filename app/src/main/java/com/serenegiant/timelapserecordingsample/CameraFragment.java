@@ -44,7 +44,7 @@ import com.serenegiant.media.TLMediaVideoEncoder;
 import java.io.IOException;
 
 public class CameraFragment extends Fragment {
-	private static final boolean DEBUG = true;	// TODO set false on release
+	private static final boolean DEBUG = true;	// TODO set false on internal_release
 	private static final String TAG = "CameraFragment";
 	
 	/**
@@ -141,12 +141,26 @@ public class CameraFragment extends Fragment {
 			if (true) {
 				// for video capturing
 				mVideoEncoder = new TLMediaVideoEncoder(getActivity(), mMovieName, mMediaEncoderListener);
-				mVideoEncoder.prepare();
+				try {
+					mVideoEncoder.prepare();
+				} catch (Exception e) {
+					Log.e(TAG, "startRecording:", e);
+					mVideoEncoder.release();
+					mVideoEncoder = null;
+					throw e;
+				}
 			}
 			if (false) {
 				// for audio capturing
 				mAudioEncoder = new TLMediaAudioEncoder(getActivity(), mMovieName, mMediaEncoderListener);
-				mAudioEncoder.prepare();
+				try {
+					mAudioEncoder.prepare();
+				} catch (Exception e) {
+					Log.e(TAG, "startRecording:", e);
+					mAudioEncoder.release();
+					mAudioEncoder = null;
+					throw e;
+				}
 			}
 			if (mVideoEncoder != null) {
 				mVideoEncoder.start(true);
@@ -155,7 +169,7 @@ public class CameraFragment extends Fragment {
 				mAudioEncoder.start(true);
 			}
 			mIsRecording = true;
-		} catch (IOException e) {
+		} catch (Exception e) {
 			mRecordButton.setColorFilter(0);
 			Log.e(TAG, "startCapture:", e);
 		}
@@ -202,7 +216,7 @@ public class CameraFragment extends Fragment {
 			}
 			if (mAudioEncoder != null) {
 				if (mAudioEncoder.isPaused())
-					mAudioEncoder.stop();
+					mAudioEncoder.resume();
 			}
 		} catch (IOException e) {
 			stopRecording();
@@ -215,13 +229,21 @@ public class CameraFragment extends Fragment {
 	private void pauseRecording() {
 		if (!mIsRecording) return;
 		mRecordButton.setColorFilter(0xffffff00);	// turn yellow
-		if (mVideoEncoder != null) {
-			if (!mVideoEncoder.isPaused())
-				mVideoEncoder.pause();
+		if ((mVideoEncoder != null) && !mVideoEncoder.isPaused())
+		try {
+			mVideoEncoder.pause();
+		} catch (Exception e) {
+			Log.e(TAG, "pauseRecording:", e);
+			mVideoEncoder.release();
+			mVideoEncoder = null;
 		}
-		if (mAudioEncoder != null) {
-			if (!mAudioEncoder.isPaused())
-				mAudioEncoder.pause();
+		if ((mAudioEncoder != null) && !mAudioEncoder.isPaused())
+		try {
+			mAudioEncoder.pause();
+		} catch (Exception e) {
+			Log.e(TAG, "pauseRecording:", e);
+			mAudioEncoder.release();
+			mAudioEncoder = null;
 		}
 	}
 

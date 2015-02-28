@@ -39,7 +39,7 @@ import android.view.SurfaceView;
 
 @TargetApi(Build.VERSION_CODES.JELLY_BEAN_MR2)
 public class EGLBase {	// API >= 17 
-	private static final boolean DEBUG = true;	// TODO set false on release
+	private static final boolean DEBUG = true;	// TODO set false on internal_release
 	private static final String TAG = "EGLBase";
 
     private static final int EGL_RECORDABLE_ANDROID = 0x3142;
@@ -83,7 +83,7 @@ public class EGLBase {	// API >= 17
 		}
 
 		public void release() {
-			if (DEBUG) Log.v(TAG, "EglSurface:release:");
+			if (DEBUG) Log.v(TAG, "EglSurface:internal_release:");
 			mEgl.makeDefault();
 			mEgl.destroyWindowSurface(mEglSurface);
 	        mEglSurface = EGL14.EGL_NO_SURFACE;
@@ -96,7 +96,7 @@ public class EGLBase {	// API >= 17
 	}
 
     public void release() {
-		if (DEBUG) Log.v(TAG, "release:");
+		if (DEBUG) Log.v(TAG, "internal_release:");
         if (mEglDisplay != EGL14.EGL_NO_DISPLAY) {
 	    	destroyContext();
 	        EGL14.eglTerminate(mEglDisplay);

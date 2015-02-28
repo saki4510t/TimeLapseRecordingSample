@@ -25,26 +25,21 @@ package com.serenegiant.media;
 */
 
 import java.io.BufferedOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.EOFException;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.lang.ref.WeakReference;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.LinkedBlockingQueue;
 
 import android.content.Context;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Environment;
-import android.os.Handler;
-import android.os.Looper;
-import android.os.Message;
 import android.text.TextUtils;
 import android.util.Log;
 
@@ -58,9 +53,26 @@ public abstract class TLMediaEncoder {
 	private final String TAG = getClass().getSimpleName();
 
 	protected static final int TIMEOUT_USEC = 10000;	// 10[msec]   
-	protected static final int MSG_FRAME_AVAILABLE = 1;
-	protected static final int MSG_PAUSE_RECORDING = 8;
-	protected static final int MSG_STOP_RECORDING = 9;
+
+	private static final int STATE_RELEASE = 0;
+	private static final int STATE_INITIALIZED = 1;
+	private static final int STATE_PREPARING = 2;
+	private static final int STATE_PREPARED = 3;
+	private static final int STATE_PAUSING = 4;
+	private static final int STATE_PAUSED = 5;
+	private static final int STATE_RESUMING = 6;
+	private static final int STATE_RUNNING = 7;
+
+	private static final int REQUEST_NON = 0;
+	private static final int REQUEST_PREPARE = 1;
+	private static final int REQUEST_RESUME = 2;
+	private static final int REQUEST_STOP = 3;
+	private static final int REQUEST_PAUSE = 4;
+	private static final int REQUEST_DRAIN = 5;
+
+//	protected static final int MSG_FRAME_AVAILABLE = 1;
+//	protected static final int MSG_PAUSE_RECORDING = 8;
+//	protected static final int MSG_STOP_RECORDING = 9;
 
 	protected static final int TYPE_VIDEO = 0;
 	protected static final int TYPE_AUDIO = 1;
@@ -91,18 +103,11 @@ public abstract class TLMediaEncoder {
 	}
 	
 	private final Object mSync = new Object();
+	private final LinkedBlockingDeque<Integer> mRequestQueue = new LinkedBlockingDeque<Integer>();
 	/**
 	 * Flag that indicate this encoder is capturing now.
 	 */
-    protected volatile boolean mIsCapturing;
-    /**
-     * Flag to request stop capturing
-     */
-    protected volatile boolean mRequestStop;
-	/**
-	 * Flag to request pause capturing
-	 */
-	protected volatile boolean mRequestPause;
+    protected volatile boolean mIsRunning;
     /**
      * Flag that indicate encoder received EOS(End Of Stream)
      */
@@ -111,7 +116,7 @@ public abstract class TLMediaEncoder {
      * MediaCodec instance for encoding
      */
     protected MediaCodec mMediaCodec;				// API >= 16(Android4.1.2)
-	protected MediaFormat mFormat;
+	private MediaFormat mFormat;
     /**
      * 
      */
@@ -124,12 +129,14 @@ public abstract class TLMediaEncoder {
     /**
      * Handler of encoding thread
      */
-    private EncoderHandler mHandler;
+//	private EncoderHandler mHandler;
     protected final MediaEncoderListener mListener;
 
 	private final Context mContext;
 	private final File mBaseDir;
 	private final int mType;
+	private Exception mCurrentException;
+	private volatile int mState = STATE_RELEASE;
 	private ObjectOutputStream mCurrentOutputStream;
 	private int mSequence;
 	private int mNumFrames = -1;
@@ -141,83 +148,42 @@ public abstract class TLMediaEncoder {
      * @param listener
      */
     public TLMediaEncoder(final Context context, final String movie_name, final int type, final MediaEncoderListener listener) {
+		if (DEBUG) Log.v(TAG, "TLMediaEncoder");
     	if (TextUtils.isEmpty(movie_name)) throw new IllegalArgumentException("movie_name should not be null");
 		mContext = context;
 		mBaseDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), movie_name);
 		mBaseDir.mkdirs();
 		mType = type;
 		mListener = listener;
-        synchronized (mSync) {
-            // create BufferInfo here for effectiveness(to reduce GC)
-            mBufferInfo = new MediaCodec.BufferInfo();
-            // wait for Handler is ready
-            new Thread(mEncoderTask, getClass().getSimpleName()).start();
-            try {
-            	mSync.wait();
-            } catch (InterruptedException e) {
-            }
-        }
-	}
-
-    /**
-     * calling this method notify encoder that the input data is already available or will be available soon
-     * @return return tur if this encoder can accept input data
-     */
-    public boolean frameAvailableSoon() {
-//    	if (DEBUG) Log.v(TAG, "frameAvailableSoon");
-        synchronized (mSync) {
-            if (!mIsCapturing || mRequestStop || mRequestPause) {
-                return false;
-            }
-            mHandler.removeMessages(MSG_FRAME_AVAILABLE);
-            mHandler.sendEmptyMessage(MSG_FRAME_AVAILABLE);
-        }
-        return true;
-    }
-
-	private final Runnable mEncoderTask = new Runnable() {
-		/**
-		 * message handling loop
-		 */
-		@Override
-		public void run() {
-			// create Looper and Handler to access to this thread
-			Looper.prepare();
-			synchronized (mSync) {
-				mHandler = new EncoderHandler(TLMediaEncoder.this);
-				mRequestStop = mRequestPause = false;
-				mSync.notify();
-			}
-
-			Looper.loop();
-
-			if (DEBUG) Log.d(TAG, "Encoder thread exiting");
-			synchronized (mSync) {
-				mIsCapturing = false;
-				mRequestStop = true;
-				mHandler = null;
+		mBufferInfo = new MediaCodec.BufferInfo();
+		new Thread(mEncoderTask, getClass().getSimpleName()).start();
+		synchronized (mSync) {
+			try {
+				mSync.wait();
+			} catch (InterruptedException e) {
 			}
 		}
-	};
+	}
+
+	protected abstract MediaFormat internal_prepare() throws IOException;
+	protected abstract void internal_configure(MediaFormat format) throws IOException;
 
 	/*
-    * prepare encoder. This method will be called once.
-    * @throws IOException
-    */
-	public abstract void prepare() throws IOException;
-
-	/**
-	 * configure encoder. This method will be called every time on resuming
-	 * @param format
+	 * prepare encoder. This method will be called once.
 	 * @throws IOException
 	 */
-	protected abstract void configure(MediaFormat format) throws IOException;
+	public final void prepare() throws Exception {
+		if (DEBUG) Log.v(TAG, "prepare");
+		if (!mIsRunning || (mState != STATE_INITIALIZED))
+			throw new IllegalStateException("not ready/already released:" + mState);
+		setRequestAndWait(REQUEST_PREPARE);
+	}
 
-   /**
-    * start encoder
-    */
-	public void start() throws IOException {
-		start(false);
+	/**
+	 * start encoder
+	 */
+	public final void start() throws IOException {
+		start(-1, false);
 	}
 
 	/**
@@ -225,37 +191,42 @@ public abstract class TLMediaEncoder {
 	 * @param pauseAfterStarted if this flag is true, encoder become pause state immediately
 	 * @throws IOException
 	 */
-	public void start(boolean pauseAfterStarted) throws IOException {
-   	if (DEBUG) Log.v(TAG, "start_from_encoder");
+	public final void start(boolean pauseAfterStarted) throws IOException {
+		start(-1, pauseAfterStarted);
+	}
+
+	/**
+	 * start encoder with specific sequence
+	 * @param sequence
+	 * @param pauseAfterStarted
+	 * @throws IOException
+	 */
+	public void start(final int sequence, boolean pauseAfterStarted) throws IOException {
+		if (DEBUG) Log.v(TAG, "start");
+		if (!mIsRunning || ((mState != STATE_PREPARING) && (mState != STATE_PREPARED)))
+			throw new IllegalStateException("not prepare/already released:" + mState);
 		synchronized (mSync) {
-			mIsCapturing = mRequestPause = true;
-			mRequestStop = false;
-			mSequence = -1;
+			mSequence = sequence;
+			// wait for Handler is ready
 			if (!pauseAfterStarted) {
-				resume();
+				resume(-1);
+			} else {
+				setRequest(REQUEST_PAUSE);
 			}
 		}
 	}
 
-   /**
-    * request stop encoder
-    */
-   public void stop() {
+	/**
+	 * request stop encoder
+	 */
+	public void stop() {
 		if (DEBUG) Log.v(TAG, "stop");
-		synchronized (mSync) {
-			if (!mIsCapturing || mRequestStop) {
-				return;
-			}
-			mRequestStop = true;	// for rejecting newer frame
-//			mSync.notifyAll();
-            mHandler.removeMessages(MSG_FRAME_AVAILABLE);
-	        // request encoder handler to stop encoding
-	        mHandler.sendEmptyMessage(MSG_STOP_RECORDING);
-	        // We can not know when the encoding and writing finish.
-	        // so we return immediately after request to avoid delay of caller thread
+		if (mState > STATE_INITIALIZED) {
+			removeRequest(REQUEST_DRAIN);
 			try {
-				mSync.wait();
-			} catch (InterruptedException e) {
+				setRequestAndWait(REQUEST_STOP);
+			} catch (Exception e) {
+				Log.w(TAG, "stop:", e);
 			}
 		}
 	}
@@ -275,24 +246,12 @@ public abstract class TLMediaEncoder {
 	 */
 	public void resume(final int num_frames) throws IOException {
 		if (DEBUG) Log.v(TAG, "resume");
-		if (mFormat == null)
-			prepare();
-		synchronized (mSync) {
-			if (!mIsCapturing || mRequestStop) {
-				return;
-			}
-			configure(mFormat);
-			changeOutputStream();
-			mMediaCodec.start();
-			encoderOutputBuffers = mMediaCodec.getOutputBuffers();
-			encoderInputBuffers = mMediaCodec.getInputBuffers();
-			mNumFrames = num_frames;
-			mFrameCounts = 0;
-			mRequestPause = false;
-		}
-		if (mListener != null) {
-			mListener.onResume(this);
-		}
+		if (!mIsRunning
+			|| 	( (mState != STATE_PREPARING) && (mState != STATE_PREPARED)
+					&& (mState != STATE_PAUSING) && (mState != STATE_PAUSED)))
+			throw new IllegalStateException("not ready to resume:" + mState);
+		mNumFrames = num_frames;
+		setRequest(REQUEST_RESUME);
 	}
 
 	/**
@@ -316,26 +275,12 @@ public abstract class TLMediaEncoder {
 	/**
 	 * request pause encoder
 	 */
-	public void pause() {
+	public void pause() throws Exception {
 		if (DEBUG) Log.v(TAG, "pause");
-		synchronized (mSync) {
-			if (!mIsCapturing || mRequestStop || mRequestPause) {
-				return;
-			}
-			internal_pause();
-			try {
-				mSync.wait();
-			} catch (InterruptedException e) {
-			}
-		}
-	}
 
-	private final void internal_pause() {
-		if (mRequestPause) return;
-		mRequestPause = true;	// for rejecting newer frame
-		mHandler.removeMessages(MSG_FRAME_AVAILABLE);
-		// request encoder handler to pause encoding
-		mHandler.sendEmptyMessage(MSG_PAUSE_RECORDING);
+//		removeRequest(REQUEST_DRAIN);
+		setRequestFirst(REQUEST_PAUSE);
+//		setState(STATE_PAUSING, null);
 	}
 
 	/**
@@ -344,7 +289,7 @@ public abstract class TLMediaEncoder {
 	 */
 	public boolean isPaused() {
 		synchronized (mSync) {
-			return mRequestPause;
+			return (mState == STATE_PAUSING) || (mState == STATE_PAUSED);
 		}
 	}
 
@@ -365,6 +310,222 @@ public abstract class TLMediaEncoder {
 			return mSequence;
 		}
 	}
+
+	/**
+     * calling this method notify encoder that the input data is already available or will be available soon
+     * @return return tur if this encoder can accept input data
+     */
+    public boolean frameAvailableSoon() {
+    	if (DEBUG) Log.v(TAG, "frameAvailableSoon");
+		if (mState != STATE_RUNNING) {
+			return false;
+		}
+		removeRequest(REQUEST_DRAIN);
+		setRequest(REQUEST_DRAIN);
+        return true;
+    }
+
+	public void release() {
+		removeRequest(REQUEST_DRAIN);
+		setRequestFirst(REQUEST_STOP);
+	}
+
+	protected void callOnResume() {
+		if (mListener != null) {
+			mListener.onResume(this);
+		}
+	}
+
+	protected void callOnPause() {
+		if (mListener != null) {
+			mListener.onPause(this);
+		}
+	}
+
+	private final void setState(final int state, final Exception e) {
+		synchronized (mSync) {
+			mState = state;
+			mCurrentException = e;
+			mSync.notifyAll();
+		}
+	}
+
+	private final void setRequest(final int request) {
+		mRequestQueue.offer(Integer.valueOf(request));
+		synchronized (mSync) {
+			mSync.notifyAll();
+		}
+	}
+
+	private final void setRequestFirst(final int request) {
+		mRequestQueue.offerFirst(Integer.valueOf(request));
+		synchronized (mSync) {
+			mSync.notifyAll();
+		}
+	}
+
+	private final void removeRequest(final int request) {
+		while (mRequestQueue.remove(Integer.valueOf(request))) {};
+	}
+
+	private final void setRequestAndWait(final int request) throws Exception {
+		mRequestQueue.offer(Integer.valueOf(request));
+		synchronized (mSync) {
+			try {
+				mSync.wait();
+				if (mCurrentException != null)
+					throw mCurrentException;
+			} catch (InterruptedException e) {
+			}
+		}
+	}
+
+	/**
+	 * 要求キューのコマンドを待機する
+	 * @return
+	 */
+	private final int waitRequest() {
+		if (DEBUG) Log.v(TAG, "waitRequest:");
+		Integer request = null;
+		try {
+			request = mRequestQueue.take();
+		} catch (InterruptedException e) {
+		}
+		return request != null ? request : REQUEST_NON;
+	}
+
+	/**
+	 * 要求キューにコマンドがあるかどうかをチェックする, 無ければREQUEST_NONを返す
+	 * 要求キューからは取り除かない
+	 * @return
+	 */
+	private final int checkRequest() {
+		final Integer request = mRequestQueue.peek();
+		return request != null ? request : REQUEST_NON;
+	}
+
+	private final Runnable mEncoderTask = new Runnable() {
+		@Override
+		public void run() {
+			boolean local_drain;
+			boolean local_pause;
+			int request = REQUEST_NON;
+			if (DEBUG) Log.v(TAG, "#run");
+			mIsRunning = true;
+			setState(STATE_INITIALIZED, null);
+			for (; mIsRunning; ) {
+				if (request == REQUEST_NON) {    // 未処理の要求コマンドが無い時
+					request = waitRequest();
+				}
+				if (request == REQUEST_STOP) {
+					handlePauseRecording();
+					mIsRunning = false;
+					break;
+				}
+				switch (mState) {
+//					case STATE_RELEASE:	// ここには来ないはず
+//						mIsRunning = false;
+//						continue;
+					case STATE_INITIALIZED:
+						if (DEBUG) Log.v(TAG, "STATE_INITIALIZED");
+						if (request == REQUEST_PREPARE) {
+							setState(STATE_PREPARING, null);
+						} else {
+							request = REQUEST_NON;
+							setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
+						}
+						break;
+					case STATE_PREPARING:
+						if (DEBUG) Log.v(TAG, "STATE_PREPARING");
+						request = REQUEST_NON;
+						try {
+							mFormat = internal_prepare();
+							if (mFormat != null)
+								setState(STATE_PREPARED, null);
+							if (mListener != null) {
+								try {
+									mListener.onPrepared(TLMediaEncoder.this);
+								} catch (Exception e) {
+									Log.e(TAG, "error occurred in #onPrepared:", e);
+								}
+							}
+						} catch (IOException e) {
+							setState(STATE_INITIALIZED, e);
+						}
+						break;
+					case STATE_PREPARED:
+						if (DEBUG) Log.v(TAG, "STATE_PREPARED");
+						switch (request) {
+						case REQUEST_RESUME:
+							setState(STATE_RESUMING, null);
+							break;
+						case REQUEST_PAUSE:
+							setState(STATE_PAUSING, null);
+							break;
+						default:
+							request = REQUEST_NON;
+							setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
+						}
+						break;
+					case STATE_PAUSING:
+						if (DEBUG) Log.v(TAG, "STATE_PAUSING");
+						request = REQUEST_NON;
+						handlePauseRecording();
+						setState(STATE_PAUSED, null);
+						callOnPause();
+						break;
+					case STATE_PAUSED:
+						if (DEBUG) Log.v(TAG, "STATE_PAUSED");
+						switch (request) {
+						case REQUEST_RESUME:
+							setState(STATE_RESUMING, null);
+							break;
+						default:
+							request = REQUEST_NON;
+							setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
+						}
+						break;
+					case STATE_RESUMING:
+						if (DEBUG) Log.v(TAG, "STATE_RESUMING");
+						request = REQUEST_NON;
+						try {
+							internal_configure(mFormat);
+							changeOutputStream();
+							mMediaCodec.start();
+							encoderOutputBuffers = mMediaCodec.getOutputBuffers();
+							encoderInputBuffers = mMediaCodec.getInputBuffers();
+							mFrameCounts = 0;
+							setState(STATE_RUNNING, null);
+							callOnResume();
+						} catch (IOException e) {
+							setState(STATE_INITIALIZED, e);
+							break;
+						}
+						break;
+					case STATE_RUNNING:
+						if (DEBUG) Log.v(TAG, "STATE_RUNNING");
+						switch (request) {
+						case REQUEST_PAUSE:
+							setState(STATE_PAUSING, null);
+							break;
+						case REQUEST_DRAIN:
+							request = REQUEST_NON;
+							drain();
+							break;
+						default:
+							request = REQUEST_NON;
+							setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
+						}
+						break;
+				} // end of switch
+			} // end of for
+			if (DEBUG) Log.v(TAG, "#run:finished");
+			setState(STATE_RELEASE, null);
+			// internal_release all related objects
+			internal_release();
+		}
+	};
+
 //********************************************************************************
 //********************************************************************************
 	/**
@@ -372,7 +533,7 @@ public abstract class TLMediaEncoder {
 	 * this method is called from message handler of EncoderHandler
 	 */
 	private final void handlePauseRecording() {
-		if (DEBUG) Log.d(TAG, "handlePauseRecording");
+		if (DEBUG) Log.v(TAG, "handlePauseRecording");
 		// process all available output data
 		drain();
 		// request stop recording
@@ -384,37 +545,24 @@ public abstract class TLMediaEncoder {
 				mCurrentOutputStream.flush();
 				mCurrentOutputStream.close();
 			} catch (IOException e) {
-				Log.e(TAG, "internal_pause:", e);
+				Log.e(TAG, "handlePauseRecording:", e);
 			}
 		mCurrentOutputStream = null;
-		mMediaCodec.stop();
-		if (mListener != null) {
-			mListener.onPause(this);
-		}
+		if (mMediaCodec != null)
+			mMediaCodec.stop();
 	}
-
-    /**
-     * handle stopping request
-     * this method is called from message handler of EncoderHandler
-     */
-    private final void handleStopRecording() {
-		if (DEBUG) Log.d(TAG, "handleStopRecording");
-		handlePauseRecording();
-        // release all related objects
-        release();
-    }
 
     /**
      * Release all related objects
      */
-    protected void release() {
-		if (DEBUG) Log.d(TAG, "release:");
+    protected void internal_release() {
+		if (DEBUG) Log.d(TAG, "internal_release:");
 		try {
 			mListener.onStopped(this);
 		} catch (Exception e) {
 			Log.e(TAG, "failed onStopped", e);
 		}
-		mIsCapturing = false;
+		mIsRunning = false;
 		encoderOutputBuffers = encoderInputBuffers = null;
         if (mMediaCodec != null) {
 			try {
@@ -436,6 +584,10 @@ public abstract class TLMediaEncoder {
         encode(null, 0, getPTSUs());
 	}
 
+	protected boolean isRecording() {
+		return mIsRunning && (mState == STATE_RUNNING);
+	}
+
     /**
      * Method to set byte array to the MediaCodec encoder
 	 * if you use Surface to input data to encoder, you should not call this method
@@ -444,10 +596,10 @@ public abstract class TLMediaEncoder {
      * @param presentationTimeUs
      */
     protected void encode(final byte[] buffer, final int length, final long presentationTimeUs) {
-    	if (!mIsCapturing || mRequestPause) return;
+    	if (!mIsRunning || !isRecording()) return;
     	int ix = 0, sz;
 //		final ByteBuffer[] encoderInputBuffers = mMediaCodec.getInputBuffers();
-        while (mIsCapturing && ix < length) {
+        while (mIsRunning && ix < length) {
 	        final int inputBufferIndex = mMediaCodec.dequeueInputBuffer(TIMEOUT_USEC);
 	        if (inputBufferIndex >= 0) {
 	            final ByteBuffer inputBuffer = encoderInputBuffers[inputBufferIndex];
@@ -486,8 +638,8 @@ public abstract class TLMediaEncoder {
      */
     protected void drain() {
     	if (mMediaCodec == null) return;
-        int encoderStatus, count = 0;
-LOOP:	while (mIsCapturing) {
+        int encoderStatus;
+LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 			// get encoded data with maximum timeout duration of TIMEOUT_USEC(=10[msec])
 			try {
 				encoderStatus = mMediaCodec.dequeueOutputBuffer(mBufferInfo, TIMEOUT_USEC);
@@ -497,8 +649,7 @@ LOOP:	while (mIsCapturing) {
             if (encoderStatus == MediaCodec.INFO_TRY_AGAIN_LATER) {
                 // wait 5 counts(=TIMEOUT_USEC x 5 = 50msec) until data/EOS come
                 if (!mIsEOS) {
-                	if (++count > 5)	
-                		break LOOP;		// out of while
+               		break LOOP;		// out of while
                 }
             } else if (encoderStatus == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
             	if (DEBUG) Log.v(TAG, "INFO_OUTPUT_BUFFERS_CHANGED");
@@ -541,8 +692,6 @@ LOOP:	while (mIsCapturing) {
 
                 if (mBufferInfo.size != 0) {
 					mFrameCounts++;
-                	// encoded data is ready, clear waiting counter
-            		count = 0;
                     if (mCurrentOutputStream == null) {
                         throw new RuntimeException("drain:temporary file not ready");
                     }
@@ -558,11 +707,11 @@ LOOP:	while (mIsCapturing) {
                 // return buffer to encoder
                 mMediaCodec.releaseOutputBuffer(encoderStatus, false);
 				if ((mNumFrames > 0) && (mFrameCounts > mNumFrames)) {
-					internal_pause();	// pause要求する
+					setState(STATE_PAUSING, null);	// pause要求する
 				}
                 if ((mBufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                 	// when EOS come.
-               		mIsCapturing = false;
+               		mIsRunning = false;
                     break;      // out of while
                 }
             }
@@ -696,6 +845,7 @@ LOOP:	while (mIsCapturing) {
 	 * @param format
 	 */
 	/*package*/static void writeFormat(final ObjectOutputStream out, final MediaFormat format) throws IOException {
+		if (DEBUG) Log.v(TAG_STATIC, "writeFormat:format=" + format);
 		final HashMap<String, Object> map = new HashMap<String, Object>();
 		if (format.containsKey(MediaFormat.KEY_MIME))
 			map.put(MediaFormat.KEY_MIME, format.getString(MediaFormat.KEY_MIME));
@@ -715,6 +865,16 @@ LOOP:	while (mIsCapturing) {
 			map.put(MediaFormat.KEY_MAX_INPUT_SIZE, format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
 		if (format.containsKey(MediaFormat.KEY_DURATION))
 			map.put(MediaFormat.KEY_DURATION, format.getInteger(MediaFormat.KEY_DURATION));
+		if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
+			map.put(MediaFormat.KEY_CHANNEL_COUNT, format.getInteger(MediaFormat.KEY_CHANNEL_COUNT));
+		if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE))
+			map.put(MediaFormat.KEY_SAMPLE_RATE, format.getInteger(MediaFormat.KEY_SAMPLE_RATE));
+		if (format.containsKey(MediaFormat.KEY_CHANNEL_MASK))
+			map.put(MediaFormat.KEY_CHANNEL_MASK, format.getInteger(MediaFormat.KEY_CHANNEL_MASK));
+		if (format.containsKey(MediaFormat.KEY_AAC_PROFILE))
+			map.put(MediaFormat.KEY_AAC_PROFILE, format.getInteger(MediaFormat.KEY_AAC_PROFILE));
+		if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE))
+			map.put(MediaFormat.KEY_MAX_INPUT_SIZE, format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
 		if (format.containsKey("what"))
 			map.put("what", format.getInteger("what"));
 		if (format.containsKey("csd-0"))
@@ -760,6 +920,16 @@ LOOP:	while (mIsCapturing) {
 					format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, (Integer)map.get(MediaFormat.KEY_MAX_INPUT_SIZE));
 				if (map.containsKey(MediaFormat.KEY_DURATION))
 					format.setInteger(MediaFormat.KEY_DURATION, (Integer)map.get(MediaFormat.KEY_DURATION));
+				if (map.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
+					format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, (Integer) map.get(MediaFormat.KEY_CHANNEL_COUNT));
+				if (map.containsKey(MediaFormat.KEY_SAMPLE_RATE))
+					format.setInteger(MediaFormat.KEY_SAMPLE_RATE, (Integer) map.get(MediaFormat.KEY_SAMPLE_RATE));
+				if (map.containsKey(MediaFormat.KEY_CHANNEL_MASK))
+					format.setInteger(MediaFormat.KEY_CHANNEL_MASK, (Integer) map.get(MediaFormat.KEY_CHANNEL_MASK));
+				if (map.containsKey(MediaFormat.KEY_AAC_PROFILE))
+					format.setInteger(MediaFormat.KEY_AAC_PROFILE, (Integer) map.get(MediaFormat.KEY_AAC_PROFILE));
+				if (map.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE))
+					format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, (Integer) map.get(MediaFormat.KEY_MAX_INPUT_SIZE));
 				if (map.containsKey("what"))
 					format.setInteger("what", (Integer)map.get("what"));
 				if (map.containsKey("csd-0"))
@@ -824,45 +994,45 @@ LOOP:	while (mIsCapturing) {
     /**
      * Handler class to handle the asynchronous request to encoder thread
      */
-    private static final class EncoderHandler extends Handler {
-        private final WeakReference<TLMediaEncoder> mWeakEncoder;
-
-        public EncoderHandler(TLMediaEncoder encoder) {
-            mWeakEncoder = new WeakReference<TLMediaEncoder>(encoder);
-        }
-
-        /**
-         * message handler
-         */
-        @Override 
-        public final void handleMessage(final Message inputMessage) {
-            final int what = inputMessage.what;
-            final TLMediaEncoder encoder = mWeakEncoder.get();
-            if (encoder == null) {
-                Log.w("EncoderHandler", "EncoderHandler#handleMessage: encoder is null");
-                return;
-            }
-            switch (what) {
-                case MSG_FRAME_AVAILABLE:
-               		encoder.drain();
-                    break;
-				case MSG_PAUSE_RECORDING:
-					encoder.handlePauseRecording();
-					synchronized (encoder.mSync) {
-						encoder.mSync.notifyAll();
-					}
-					break;
-                case MSG_STOP_RECORDING:
-                    encoder.handleStopRecording();
-					synchronized (encoder.mSync) {
-						encoder.mSync.notifyAll();
-					}
-                    Looper.myLooper().quit();
-                    break;
-                default:
-                    throw new RuntimeException("unknown message what=" + what);
-            }
-        }
-    }
+//	private static final class EncoderHandler extends Handler {
+//		private final WeakReference<TLMediaEncoder> mWeakEncoder;
+//
+//		public EncoderHandler(TLMediaEncoder encoder) {
+//			mWeakEncoder = new WeakReference<TLMediaEncoder>(encoder);
+//		}
+//
+//		/**
+//		 * message handler
+//		 */
+//		@Override
+//		public final void handleMessage(final Message inputMessage) {
+//			final int what = inputMessage.what;
+//			final TLMediaEncoder encoder = mWeakEncoder.get();
+//			if (encoder == null) {
+//				Log.w("EncoderHandler", "EncoderHandler#handleMessage: encoder is null");
+//				return;
+//			}
+//			switch (what) {
+//			case MSG_FRAME_AVAILABLE:
+//				encoder.drain();
+//				break;
+//			case MSG_PAUSE_RECORDING:
+//				encoder.handlePauseRecording();
+//				synchronized (encoder.mSync) {
+//					encoder.mSync.notifyAll();
+//				}
+//				break;
+//			case MSG_STOP_RECORDING:
+//				encoder.handleStopRecording();
+//				synchronized (encoder.mSync) {
+//					encoder.mSync.notifyAll();
+//				}
+//				Looper.myLooper().quit();
+//				break;
+//			default:
+//				throw new RuntimeException("unknown message what=" + what);
+//			}
+//		}
+//	}
 
 }

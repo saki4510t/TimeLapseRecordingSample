@@ -28,6 +28,7 @@ import android.content.Context;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
+import android.os.*;
 import android.util.Log;
 
 /**
@@ -62,35 +63,42 @@ public final class TLMediaAudioEncoder extends AbstractTLMediaAudioEncoder {
 
 	@Override
 	protected void recordingLoop() {
-        final int buf_sz = AudioRecord.getMinBufferSize(
-        	mSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT) * 4;
-        Log.i(TAG, "buf_sz=" + buf_sz);
-        final AudioRecord audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC,
-        	mSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, buf_sz);
-        try {
-        	if (mIsCapturing) {
-				if (DEBUG) Log.v(TAG, "AudioThread:start_from_encoder audio recording");
-                final byte[] buf = new byte[buf_sz];
-                int readBytes;
-                audioRecord.startRecording();
-                try {
-		    		while (mIsCapturing && !mRequestStop && !mIsEOS) {
-		    			// read audio data from internal mic
-		    			readBytes = audioRecord.read(buf, 0, buf_sz);
-		    			if (readBytes > 0) {
-		    			    // set audio data to encoder
-		    				encode(buf, readBytes, getPTSUs());
-		    				frameAvailableSoon();
-		    			}
-		    		}
-    				frameAvailableSoon();
-                } finally {
-                	audioRecord.stop();
-                }
-        	}
-        } finally {
-        	audioRecord.release();
-        }
+//		android.os.Process.setThreadPriority(
+//			android.os.Process.THREAD_PRIORITY_URGENT_AUDIO);
+		try {
+			final int buf_sz = AudioRecord.getMinBufferSize(
+					mSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT) * 2;
+			Log.i(TAG, "buf_sz=" + buf_sz);
+			final AudioRecord audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC,
+					mSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, buf_sz);
+			try {
+				if ((audioRecord.getState() == AudioRecord.STATE_INITIALIZED) && (mIsRunning)) {
+					if (DEBUG) Log.v(TAG, "AudioThread:start_from_encoder audio recording");
+					final byte[] buf = new byte[buf_sz];
+					int readBytes;
+					audioRecord.startRecording();
+					try {
+						while (mIsRunning && isRecording() && !mIsEOS) {
+							// read audio data from internal mic
+							readBytes = audioRecord.read(buf, 0, buf_sz);
+							if (readBytes > 0) {
+								// set audio data to encoder
+								encode(buf, readBytes, getPTSUs());
+								frameAvailableSoon();
+							}
+						}
+						frameAvailableSoon();
+					} finally {
+						audioRecord.stop();
+					}
+				}
+			} finally {
+				audioRecord.release();
+			}
+		} finally {
+			android.os.Process.setThreadPriority(
+				android.os.Process.THREAD_PRIORITY_DEFAULT);
+		}
 	}
 
 }

@@ -55,7 +55,7 @@ import com.serenegiant.media.TLMediaVideoEncoder;
  */
 public final class CameraGLView extends GLSurfaceView {
 
-	private static final boolean DEBUG = false; // TODO set false on release
+	private static final boolean DEBUG = false; // TODO set false on internal_release
 	private static final String TAG = "CameraGLView";
 
 	private final CameraSurfaceRenderer mRenderer;

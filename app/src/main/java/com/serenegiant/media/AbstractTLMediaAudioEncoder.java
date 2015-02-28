@@ -38,7 +38,7 @@ import android.util.Log;
  * Encoder class to encode audio data with AAC encoder and save into intermediate files
  */
 public abstract class AbstractTLMediaAudioEncoder extends TLMediaEncoder {
-	private static final boolean DEBUG = false;
+	private static final boolean DEBUG = true;
 	private final String TAG = getClass().getSimpleName();
 
 	private static final String MIME_TYPE = "audio/mp4a-latm";
@@ -67,61 +67,53 @@ public abstract class AbstractTLMediaAudioEncoder extends TLMediaEncoder {
 	}
 
 	@Override
-	public void prepare() throws IOException {
+	protected MediaFormat internal_prepare() throws IOException {
 		if (DEBUG) Log.v(TAG, "prepare:");
 		mIsEOS = false;
 		// prepare MediaCodec for AAC encoding of audio data from inernal mic.
 		final MediaCodecInfo audioCodecInfo = selectAudioCodec(MIME_TYPE);
 		if (audioCodecInfo == null) {
 			Log.e(TAG, "Unable to find an appropriate codec for " + MIME_TYPE);
-			return;
+			return null;
 		}
 		if (DEBUG) Log.i(TAG, "selected codec: " + audioCodecInfo.getName());
 
-		final MediaFormat audioFormat = MediaFormat.createAudioFormat(MIME_TYPE, mSampleRate, 1);
-		audioFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
-		audioFormat.setInteger(MediaFormat.KEY_CHANNEL_MASK, AudioFormat.CHANNEL_IN_MONO);
-		audioFormat.setInteger(MediaFormat.KEY_BIT_RATE, mBitRate);
-		audioFormat.setInteger(MediaFormat.KEY_CHANNEL_COUNT, 1);
-//		audioFormat.setLong(MediaFormat.KEY_MAX_INPUT_SIZE, inputFile.length());
-//      audioFormat.setLong(MediaFormat.KEY_DURATION, (long)durationInMs );
-		if (DEBUG) Log.i(TAG, "format: " + audioFormat);
-		configure(mFormat);
-//		mMediaCodec.start();
-		if (DEBUG) Log.i(TAG, "prepare finishing");
-		if (mListener != null) {
-			try {
-				mListener.onPrepared(this);
-			} catch (Exception e) {
-				Log.e(TAG, "prepare:", e);
-			}
-		}
+		final MediaFormat format = MediaFormat.createAudioFormat(MIME_TYPE, mSampleRate, 1);
+		format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+		format.setInteger(MediaFormat.KEY_CHANNEL_MASK, AudioFormat.CHANNEL_IN_MONO);
+		format.setInteger(MediaFormat.KEY_BIT_RATE, mBitRate);
+		format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, 1);
+//		format.setLong(MediaFormat.KEY_MAX_INPUT_SIZE, inputFile.length());
+//      format.setLong(MediaFormat.KEY_DURATION, (long)durationInMs );
+		if (DEBUG) Log.i(TAG, "prepare finishing:format=" + format);
+		return format;
 	}
 
-	protected void configure(final MediaFormat format) throws IOException {
+	@Override
+	protected void internal_configure(final MediaFormat format) throws IOException {
+		if (DEBUG) Log.v(TAG, "internal_configure:");
 		mMediaCodec = MediaCodec.createEncoderByType(MIME_TYPE);
         mMediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
 	}
 
-    @Override
-	public void start() throws IOException {
-		super.start();
+	@Override
+	protected void callOnResume() {
+		super.callOnResume();
 		// create and execute audio capturing thread using internal mic
 		if (mAudioThread == null) {
-	        mAudioThread = new AudioThread();
+			mAudioThread = new AudioThread();
 			mAudioThread.start();
 		}
 	}
 
 	@Override
-    protected void release() {
+	protected void callOnPause() {
 		mAudioThread = null;
-		super.release();
-    }
+	}
 
 	/**
 	 * audio sampling loop. this method is executed on private thread
-	 * this method should return if mIsCapturing=false or mRequestStop=true or mIsEOS=true.
+	 * this method should return if mIsRunning=false or mRequestStop=true or mIsEOS=true.
 	 */
 	protected abstract void recordingLoop();
 

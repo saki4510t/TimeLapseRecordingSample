@@ -35,7 +35,7 @@ import android.view.SurfaceHolder;
  * Helper class to draw texture to whole view on private thread
  */
 public final class RenderHandler implements Runnable {
-	private static final boolean DEBUG = true;	// TODO set false on release
+	private static final boolean DEBUG = true;	// TODO set false on internal_release
 	private static final String TAG = "RenderHandler";
 
 	private final Object mSync = new Object();
@@ -116,7 +116,7 @@ public final class RenderHandler implements Runnable {
 	}
 
 	public final void release() {
-		if (DEBUG) Log.i(TAG, "release:");
+		if (DEBUG) Log.i(TAG, "internal_release:");
 		synchronized (mSync) {
 			if (mRequestRelease) return;
 			mRequestRelease = true;
