@@ -24,18 +24,6 @@ package com.serenegiant.media;
  * All files in the folder are under this Apache License, Version 2.0.
 */
 
-import java.io.BufferedOutputStream;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.nio.BufferOverflowException;
-import java.nio.ByteBuffer;
-import java.util.HashMap;
-import java.util.concurrent.LinkedBlockingDeque;
-import java.util.concurrent.LinkedBlockingQueue;
-
 import android.content.Context;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
@@ -43,8 +31,24 @@ import android.os.Environment;
 import android.text.TextUtils;
 import android.util.Log;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.BufferOverflowException;
+import java.nio.ByteBuffer;
+import java.util.concurrent.LinkedBlockingDeque;
+
 /**
- * abstract class to audio/video frames into intermediate files
+ * abstract class to audio/video frames into intermediate file
  * using MediaCodec encoder so that pause / resume feature is available.
  */
 public abstract class TLMediaEncoder {
@@ -70,12 +74,8 @@ public abstract class TLMediaEncoder {
 	private static final int REQUEST_PAUSE = 4;
 	private static final int REQUEST_DRAIN = 5;
 
-//	protected static final int MSG_FRAME_AVAILABLE = 1;
-//	protected static final int MSG_PAUSE_RECORDING = 8;
-//	protected static final int MSG_STOP_RECORDING = 9;
-
-	protected static final int TYPE_VIDEO = 0;
-	protected static final int TYPE_AUDIO = 1;
+	static final int TYPE_VIDEO = 0;
+	static final int TYPE_AUDIO = 1;
 	/**
 	 * callback listener
 	 */
@@ -104,40 +104,20 @@ public abstract class TLMediaEncoder {
 	
 	private final Object mSync = new Object();
 	private final LinkedBlockingDeque<Integer> mRequestQueue = new LinkedBlockingDeque<Integer>();
-	/**
-	 * Flag that indicate this encoder is capturing now.
-	 */
     protected volatile boolean mIsRunning;
-    /**
-     * Flag that indicate encoder received EOS(End Of Stream)
-     */
-    protected boolean mIsEOS;
-    /**
-     * MediaCodec instance for encoding
-     */
-    protected MediaCodec mMediaCodec;				// API >= 16(Android4.1.2)
-	private MediaFormat mFormat;
-    /**
-     * 
-     */
-    protected ByteBuffer[] encoderOutputBuffers;
-    protected ByteBuffer[] encoderInputBuffers;
-    /**
-     * BufferInfo instance for dequeuing
-     */
+    private boolean mIsEOS;
+    private MediaCodec mMediaCodec;				// API >= 16(Android4.1.2)
+	private MediaFormat mConfigFormat;
+	private ByteBuffer[] encoderOutputBuffers;
+	private ByteBuffer[] encoderInputBuffers;
     private MediaCodec.BufferInfo mBufferInfo;		// API >= 16(Android4.1.2)
-    /**
-     * Handler of encoding thread
-     */
-//	private EncoderHandler mHandler;
-    protected final MediaEncoderListener mListener;
+	private final MediaEncoderListener mListener;
 
-	private final Context mContext;
 	private final File mBaseDir;
 	private final int mType;
 	private Exception mCurrentException;
 	private volatile int mState = STATE_RELEASE;
-	private ObjectOutputStream mCurrentOutputStream;
+	private DataOutputStream mCurrentOutputStream;
 	private int mSequence;
 	private int mNumFrames = -1;
 	private int mFrameCounts;
@@ -150,7 +130,6 @@ public abstract class TLMediaEncoder {
     public TLMediaEncoder(final Context context, final String movie_name, final int type, final MediaEncoderListener listener) {
 		if (DEBUG) Log.v(TAG, "TLMediaEncoder");
     	if (TextUtils.isEmpty(movie_name)) throw new IllegalArgumentException("movie_name should not be null");
-		mContext = context;
 		mBaseDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), movie_name);
 		mBaseDir.mkdirs();
 		mType = type;
@@ -164,9 +143,6 @@ public abstract class TLMediaEncoder {
 			}
 		}
 	}
-
-	protected abstract MediaFormat internal_prepare() throws IOException;
-	protected abstract void internal_configure(MediaFormat format) throws IOException;
 
 	/*
 	 * prepare encoder. This method will be called once.
@@ -183,30 +159,19 @@ public abstract class TLMediaEncoder {
 	 * start encoder
 	 */
 	public final void start() throws IOException {
-		start(-1, false);
-	}
-
-	/**
-	 * start encoder
-	 * @param pauseAfterStarted if this flag is true, encoder become pause state immediately
-	 * @throws IOException
-	 */
-	public final void start(boolean pauseAfterStarted) throws IOException {
-		start(-1, pauseAfterStarted);
+		start(false);
 	}
 
 	/**
 	 * start encoder with specific sequence
-	 * @param sequence
 	 * @param pauseAfterStarted
 	 * @throws IOException
 	 */
-	public void start(final int sequence, boolean pauseAfterStarted) throws IOException {
+	public void start(boolean pauseAfterStarted) throws IOException {
 		if (DEBUG) Log.v(TAG, "start");
 		if (!mIsRunning || ((mState != STATE_PREPARING) && (mState != STATE_PREPARED)))
 			throw new IllegalStateException("not prepare/already released:" + mState);
 		synchronized (mSync) {
-			mSequence = sequence;
 			// wait for Handler is ready
 			if (!pauseAfterStarted) {
 				resume(-1);
@@ -247,29 +212,11 @@ public abstract class TLMediaEncoder {
 	public void resume(final int num_frames) throws IOException {
 		if (DEBUG) Log.v(TAG, "resume");
 		if (!mIsRunning
-			|| 	( (mState != STATE_PREPARING) && (mState != STATE_PREPARED)
-					&& (mState != STATE_PAUSING) && (mState != STATE_PAUSED)))
+			|| ( (mState != STATE_PREPARING) && (mState != STATE_PREPARED)
+					&& (mState != STATE_PAUSING) && (mState != STATE_PAUSED) ) )
 			throw new IllegalStateException("not ready to resume:" + mState);
 		mNumFrames = num_frames;
 		setRequest(REQUEST_RESUME);
-	}
-
-	/**
-	 * change intermediate file for next sequence
-	 * @throws IOException
-	 */
-	private final void changeOutputStream() throws IOException {
-		if (mCurrentOutputStream != null)
-			try {
-				mCurrentOutputStream.flush();
-				mCurrentOutputStream.close();
-			} catch (IOException e) {
-				Log.e(TAG, "changeOutputStream: failed to flush temporary file", e);
-				throw e;
-			}
-		mSequence++;
-		final String path = getSequenceFilePath(mBaseDir, mType, mSequence);
-		mCurrentOutputStream = new ObjectOutputStream(new BufferedOutputStream(new FileOutputStream(path)));
 	}
 
 	/**
@@ -278,9 +225,8 @@ public abstract class TLMediaEncoder {
 	public void pause() throws Exception {
 		if (DEBUG) Log.v(TAG, "pause");
 
-//		removeRequest(REQUEST_DRAIN);
+		removeRequest(REQUEST_DRAIN);
 		setRequestFirst(REQUEST_PAUSE);
-//		setState(STATE_PAUSING, null);
 	}
 
 	/**
@@ -297,26 +243,26 @@ public abstract class TLMediaEncoder {
 	 * set sequence number
 	 * @param sequence
 	 */
-	public void setSequence(final int sequence) {
+/*	public void setSequence(final int sequence) {
 		mSequence = sequence;
-	}
+	} */
 
 	/**
 	 * get sequence number
 	 * @return
 	 */
-	public int getSequence() {
+/*	public int getSequence() {
 		synchronized (mSync) {
 			return mSequence;
 		}
-	}
+	} */
 
 	/**
      * calling this method notify encoder that the input data is already available or will be available soon
      * @return return tur if this encoder can accept input data
      */
     public boolean frameAvailableSoon() {
-    	if (DEBUG) Log.v(TAG, "frameAvailableSoon");
+//    	if (DEBUG) Log.v(TAG, "frameAvailableSoon");
 		if (mState != STATE_RUNNING) {
 			return false;
 		}
@@ -330,6 +276,29 @@ public abstract class TLMediaEncoder {
 		setRequestFirst(REQUEST_STOP);
 	}
 
+//********************************************************************************
+//********************************************************************************
+
+	/**
+	 * prepare MediaFormat instance for this encoder.
+	 * If there are previous intermediate files exist in current movie directory,
+	 * this method may not be called.
+	 * @return
+	 * @throws IOException
+	 */
+	protected abstract MediaFormat internal_prepare() throws IOException;
+
+	/**
+	 * execute MediaCodec#configure.
+	 * this method will be called every resuming
+	 * @param previous_codec
+	 * @param format
+	 * @return
+	 * @throws IOException
+	 */
+	protected abstract MediaCodec internal_configure(MediaCodec previous_codec, MediaFormat format) throws IOException;
+
+
 	protected void callOnResume() {
 		if (mListener != null) {
 			mListener.onResume(this);
@@ -342,6 +311,8 @@ public abstract class TLMediaEncoder {
 		}
 	}
 
+//********************************************************************************
+//********************************************************************************
 	private final void setState(final int state, final Exception e) {
 		synchronized (mSync) {
 			mState = state;
@@ -381,11 +352,11 @@ public abstract class TLMediaEncoder {
 	}
 
 	/**
-	 * 要求キューのコマンドを待機する
+	 * wait request
 	 * @return
 	 */
 	private final int waitRequest() {
-		if (DEBUG) Log.v(TAG, "waitRequest:");
+//		if (DEBUG) Log.v(TAG, "waitRequest:");
 		Integer request = null;
 		try {
 			request = mRequestQueue.take();
@@ -394,21 +365,9 @@ public abstract class TLMediaEncoder {
 		return request != null ? request : REQUEST_NON;
 	}
 
-	/**
-	 * 要求キューにコマンドがあるかどうかをチェックする, 無ければREQUEST_NONを返す
-	 * 要求キューからは取り除かない
-	 * @return
-	 */
-	private final int checkRequest() {
-		final Integer request = mRequestQueue.peek();
-		return request != null ? request : REQUEST_NON;
-	}
-
 	private final Runnable mEncoderTask = new Runnable() {
 		@Override
 		public void run() {
-			boolean local_drain;
-			boolean local_pause;
 			int request = REQUEST_NON;
 			if (DEBUG) Log.v(TAG, "#run");
 			mIsRunning = true;
@@ -423,25 +382,31 @@ public abstract class TLMediaEncoder {
 					break;
 				}
 				switch (mState) {
-//					case STATE_RELEASE:	// ここには来ないはず
-//						mIsRunning = false;
-//						continue;
+					case STATE_RELEASE:
+						setState(STATE_RELEASE, new IllegalStateException("state=" + mState + ",request=" + request));
+						mIsRunning = false;
+						continue;
 					case STATE_INITIALIZED:
 						if (DEBUG) Log.v(TAG, "STATE_INITIALIZED");
 						if (request == REQUEST_PREPARE) {
 							setState(STATE_PREPARING, null);
 						} else {
-							request = REQUEST_NON;
 							setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
+							request = REQUEST_NON;
 						}
 						break;
 					case STATE_PREPARING:
 						if (DEBUG) Log.v(TAG, "STATE_PREPARING");
 						request = REQUEST_NON;
 						try {
-							mFormat = internal_prepare();
-							if (mFormat != null)
+							checkLastSequence();
+							if (mConfigFormat == null)
+								mConfigFormat = internal_prepare();
+							if (mConfigFormat != null) {
 								setState(STATE_PREPARED, null);
+							} else {
+								setState(STATE_INITIALIZED, new IllegalArgumentException());
+							}
 							if (mListener != null) {
 								try {
 									mListener.onPrepared(TLMediaEncoder.this);
@@ -463,8 +428,8 @@ public abstract class TLMediaEncoder {
 							setState(STATE_PAUSING, null);
 							break;
 						default:
-							request = REQUEST_NON;
 							setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
+							request = REQUEST_NON;
 						}
 						break;
 					case STATE_PAUSING:
@@ -481,20 +446,21 @@ public abstract class TLMediaEncoder {
 							setState(STATE_RESUMING, null);
 							break;
 						default:
-							request = REQUEST_NON;
 							setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
+							request = REQUEST_NON;
 						}
 						break;
 					case STATE_RESUMING:
 						if (DEBUG) Log.v(TAG, "STATE_RESUMING");
 						request = REQUEST_NON;
 						try {
-							internal_configure(mFormat);
-							changeOutputStream();
+							mIsEOS = false;
+							mMediaCodec = internal_configure(mMediaCodec, mConfigFormat);
+							mCurrentOutputStream = openOutputStream(); // changeOutputStream();
 							mMediaCodec.start();
 							encoderOutputBuffers = mMediaCodec.getOutputBuffers();
 							encoderInputBuffers = mMediaCodec.getInputBuffers();
-							mFrameCounts = 0;
+							mFrameCounts = -1;
 							setState(STATE_RUNNING, null);
 							callOnResume();
 						} catch (IOException e) {
@@ -513,8 +479,8 @@ public abstract class TLMediaEncoder {
 							drain();
 							break;
 						default:
-							request = REQUEST_NON;
 							setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
+							request = REQUEST_NON;
 						}
 						break;
 				} // end of switch
@@ -541,15 +507,20 @@ public abstract class TLMediaEncoder {
 		// process output data again for EOS signal
 		drain();
 		if (mCurrentOutputStream != null)
-			try {
-				mCurrentOutputStream.flush();
-				mCurrentOutputStream.close();
-			} catch (IOException e) {
-				Log.e(TAG, "handlePauseRecording:", e);
-			}
+		try {
+			mCurrentOutputStream.flush();
+			mCurrentOutputStream.close();
+		} catch (IOException e) {
+			Log.e(TAG, "handlePauseRecording:", e);
+		}
 		mCurrentOutputStream = null;
-		if (mMediaCodec != null)
+		encoderOutputBuffers = encoderInputBuffers = null;
+		mRequestQueue.clear();
+		if (mMediaCodec != null) {
 			mMediaCodec.stop();
+			mMediaCodec.release();
+			mMediaCodec = null;
+		}
 	}
 
     /**
@@ -563,7 +534,6 @@ public abstract class TLMediaEncoder {
 			Log.e(TAG, "failed onStopped", e);
 		}
 		mIsRunning = false;
-		encoderOutputBuffers = encoderInputBuffers = null;
         if (mMediaCodec != null) {
 			try {
 	            mMediaCodec.stop();
@@ -585,7 +555,7 @@ public abstract class TLMediaEncoder {
 	}
 
 	protected boolean isRecording() {
-		return mIsRunning && (mState == STATE_RUNNING);
+		return mIsRunning && (mState == STATE_RUNNING) && (!mIsEOS);
 	}
 
     /**
@@ -598,7 +568,6 @@ public abstract class TLMediaEncoder {
     protected void encode(final byte[] buffer, final int length, final long presentationTimeUs) {
     	if (!mIsRunning || !isRecording()) return;
     	int ix = 0, sz;
-//		final ByteBuffer[] encoderInputBuffers = mMediaCodec.getInputBuffers();
         while (mIsRunning && ix < length) {
 	        final int inputBufferIndex = mMediaCodec.dequeueInputBuffer(TIMEOUT_USEC);
 	        if (inputBufferIndex >= 0) {
@@ -666,8 +635,8 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 				if (mSequence == 0) {	// sequence 0 is for saving MediaFormat
 					final MediaFormat format = mMediaCodec.getOutputFormat(); // API >= 16
 					try {
-						writeFormat(mCurrentOutputStream, format);
-						changeOutputStream();	// change to next intermediate file
+						writeFormat(mCurrentOutputStream, mConfigFormat, format);
+//						changeOutputStream();
 					} catch (IOException e) {
 						Log.e(TAG, "drain:failed to write MediaFormat ", e);
 					}
@@ -698,7 +667,7 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
                     // write encoded data to muxer(need to adjust presentationTimeUs.
                    	mBufferInfo.presentationTimeUs = getPTSUs();
 					try {
-						writeStream(mCurrentOutputStream, mBufferInfo, encodedData, writeBuffer);
+						writeStream(mCurrentOutputStream, mSequence, mFrameCounts, mBufferInfo, encodedData, writeBuffer);
 					} catch (IOException e) {
 						throw new RuntimeException("drain:failed to writeStream:" + e.getMessage());
 					}
@@ -706,8 +675,8 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
                 }
                 // return buffer to encoder
                 mMediaCodec.releaseOutputBuffer(encoderStatus, false);
-				if ((mNumFrames > 0) && (mFrameCounts > mNumFrames)) {
-					setState(STATE_PAUSING, null);	// pause要求する
+				if ((mNumFrames > 0) && (mFrameCounts >= mNumFrames)) {
+					setState(STATE_PAUSING, null);	// request pause
 				}
                 if ((mBufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                 	// when EOS come.
@@ -719,11 +688,11 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
     }
 
     /**
-     * 前回エンコード時の時刻[マイクロ秒]
+     * time when previous encoding[micro second(s)]
      */
 	private long prevOutputPTSUs = 0;
 	/**
-	 * エンコード開始時刻[マイクロ秒]
+	 * time when start encoding[micro seconds]
 	 */
 	private long firstTimeUs = -1;
 	/**
@@ -733,8 +702,6 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
     protected long getPTSUs() {
     	if (firstTimeUs < 0) firstTimeUs = System.nanoTime() / 1000L;
 		long result = System.nanoTime() / 1000L - firstTimeUs;
-    	// presentationTimeUs should be monotonic
-    	// otherwise muxer fail to write
 		if (result < prevOutputPTSUs) {
 			final long delta = prevOutputPTSUs - result + 8333;	// add approx 1/120 sec as a bias
 			result += delta;
@@ -743,57 +710,101 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 		return result;
     }
 
-	/*package*/static String getSequenceFilePath(File base_dir, int type, int sequence) {
-		final File file = new File(base_dir, String.format("%s-%d.raw", ((type == 1 ? "audio" : "video")), sequence));
+	private void checkLastSequence() {
+		if (DEBUG) Log.v(TAG, "checkLastSequence:");
+		int sequence = -1;
+		MediaFormat configFormat = null;
+		try {
+			final DataInputStream in = openInputStream(mBaseDir, mType, 0);
+			if (in != null)
+			try {
+				// read MediaFormat data for MediaCodec and for MediaMuxer
+				readHeader(in);
+				configFormat = asMediaFormat(in.readUTF());	// for MediaCodec
+				in.readUTF();	// for MediaMuxer
+				// search last sequence
+				// XXX this is not a effective implementation for large intermediate file.
+				// it may be better to split into multiple files for each sequence
+				// or split into two files; file for control block and file for raw bit stream.
+				final TLMediaFrameHeader header = new TLMediaFrameHeader();
+				for (; mIsRunning ;) {
+					readHeader(in, header);
+					in.skipBytes(header.size);
+					sequence = Math.max(sequence, header.sequence);
+				}
+			} finally {
+				in.close();
+			}
+		} catch (Exception e) {
+		}
+		mSequence = sequence;
+		mConfigFormat = configFormat;
+		if (sequence < 0) {
+			// if intermediate files do not exist or invalid, remove them and re-create intermediate directory
+			delete(mBaseDir);
+			mBaseDir.mkdirs();
+		}
+		if (DEBUG) Log.v(TAG, "checkLastSequence:finished. sequence=" + sequence);
+	}
+
+	/*package*/static class TLMediaFrameHeader {
+		public int sequence;
+		public int frameNumber;
+		public long presentationTimeUs;
+		public int size;
+		public int flags;
+
+		public MediaCodec.BufferInfo asBufferInfo() {
+			final MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+			info.set(0, size, presentationTimeUs, flags);
+			return info;
+		}
+
+		public MediaCodec.BufferInfo asBufferInfo(final MediaCodec.BufferInfo info) {
+			info.set(0, size, presentationTimeUs, flags);
+			return info;
+		}
+
+		@Override
+		public String toString() {
+			return String.format("TLMediaFrameHeader(sequence=%d,frameNumber=%d,presentationTimeUs=%d,size=%d,flags=%d)",
+				sequence, frameNumber, presentationTimeUs, size, flags);
+		}
+	}
+
+	private static String getSequenceFilePath(final File base_dir, final int type, final long sequence) {
+		final File file = new File(base_dir, String.format("%s-%d.raw", (type == 1 ? "audio" : "video"), sequence));
 		return file.getAbsolutePath();
 	}
 
 	/**
-	 * write frame header
-	 * @param presentation_time_us
-	 * @param size
-	 * @throws IOException
-	 */
-	protected static void writeHeader(final ObjectOutputStream out, final long presentation_time_us, final int size, final int flag) throws IOException {
-		out.writeLong(presentation_time_us);
-		out.writeInt(size);
-		out.writeInt(flag);
-		//
-		out.writeLong(0);
-		out.writeLong(0);
-		out.writeLong(0);
-		out.writeLong(0);
-		out.writeLong(0);
-		out.writeLong(0);
-	}
-
-	/**
-	 * read frame header as BufferInfo
-	 * @param in
-	 * @param info
+	 * open intermediate file for next sequence
 	 * @return
 	 * @throws IOException
 	 */
-	/*package*/static MediaCodec.BufferInfo readHeader(final ObjectInputStream in, final MediaCodec.BufferInfo info) throws IOException {
-		info.size = 0;
-		info.presentationTimeUs = in.readLong();
-		info.size = in.readInt();
-		info.flags = in.readInt();
-		in.skipBytes(48);	// long x 6
-		return info;
+	private final DataOutputStream openOutputStream() throws IOException {
+		if (mCurrentOutputStream != null)
+			try {
+				mCurrentOutputStream.flush();
+				mCurrentOutputStream.close();
+			} catch (IOException e) {
+				Log.e(TAG, "openOutputStream: failed to flush temporary file", e);
+				throw e;
+			}
+		mSequence++;
+		final String path = getSequenceFilePath(mBaseDir, mType, 0);
+		return new DataOutputStream(new BufferedOutputStream(new FileOutputStream(path, mSequence > 0)));
 	}
 
-	/**
-	 * read frame header and only returns size of frame
-	 * @param in
-	 * @return
-	 * @throws IOException
-	 */
-	/*package*/static int readHeader(final ObjectInputStream in) throws IOException {
-		in.readLong();
-		final int size = in.readInt();
-		in.skipBytes(52);	// long x 6 + int x 1
-		return size;
+	/*package*/static final DataInputStream openInputStream(final File base_dir, final int type, final int sequence) throws IOException {
+		final String path = getSequenceFilePath(base_dir, type, sequence);
+		DataInputStream in = null;
+		try {
+			in = new DataInputStream(new BufferedInputStream((new FileInputStream(path))));
+		} catch (FileNotFoundException e) {
+//			if (DEBUG) Log.e(TAG, "openInputStream:" + path, e);
+		}
+		return in;
 	}
 
 	/**
@@ -801,7 +812,7 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 	 * @param buffer
 	 * @return
 	 */
-	private static final String asString(ByteBuffer buffer) {
+	private static final String asString(final ByteBuffer buffer) {
 		final byte[] temp = new byte[16];
 		final StringBuilder sb = new StringBuilder();
 		int n = (buffer != null ? buffer.limit() : 0);
@@ -824,7 +835,7 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 	 * @param str
 	 * @return
 	 */
-	private static final ByteBuffer asByteBuffer(String str) {
+	private static final ByteBuffer asByteBuffer(final String str) {
 		final String[] hex = str.split(",");
 		final int m = hex.length;
 		final byte[] temp = new byte[m];
@@ -839,106 +850,168 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 			return null;
 	}
 
+	private static final String asString(final MediaFormat format) {
+		final JSONObject map = new JSONObject();
+		try {
+			if (format.containsKey(MediaFormat.KEY_MIME))
+				map.put(MediaFormat.KEY_MIME, format.getString(MediaFormat.KEY_MIME));
+			if (format.containsKey(MediaFormat.KEY_WIDTH))
+				map.put(MediaFormat.KEY_WIDTH, format.getInteger(MediaFormat.KEY_WIDTH));
+			if (format.containsKey(MediaFormat.KEY_HEIGHT))
+				map.put(MediaFormat.KEY_HEIGHT, format.getInteger(MediaFormat.KEY_HEIGHT));
+			if (format.containsKey(MediaFormat.KEY_BIT_RATE))
+				map.put(MediaFormat.KEY_BIT_RATE, format.getInteger(MediaFormat.KEY_BIT_RATE));
+			if (format.containsKey(MediaFormat.KEY_COLOR_FORMAT))
+				map.put(MediaFormat.KEY_COLOR_FORMAT, format.getInteger(MediaFormat.KEY_COLOR_FORMAT));
+			if (format.containsKey(MediaFormat.KEY_FRAME_RATE))
+				map.put(MediaFormat.KEY_FRAME_RATE, format.getInteger(MediaFormat.KEY_FRAME_RATE));
+			if (format.containsKey(MediaFormat.KEY_I_FRAME_INTERVAL))
+				map.put(MediaFormat.KEY_I_FRAME_INTERVAL, format.getInteger(MediaFormat.KEY_I_FRAME_INTERVAL));
+			if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE))
+				map.put(MediaFormat.KEY_MAX_INPUT_SIZE, format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
+			if (format.containsKey(MediaFormat.KEY_DURATION))
+				map.put(MediaFormat.KEY_DURATION, format.getInteger(MediaFormat.KEY_DURATION));
+			if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
+				map.put(MediaFormat.KEY_CHANNEL_COUNT, format.getInteger(MediaFormat.KEY_CHANNEL_COUNT));
+			if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE))
+				map.put(MediaFormat.KEY_SAMPLE_RATE, format.getInteger(MediaFormat.KEY_SAMPLE_RATE));
+			if (format.containsKey(MediaFormat.KEY_CHANNEL_MASK))
+				map.put(MediaFormat.KEY_CHANNEL_MASK, format.getInteger(MediaFormat.KEY_CHANNEL_MASK));
+			if (format.containsKey(MediaFormat.KEY_AAC_PROFILE))
+				map.put(MediaFormat.KEY_AAC_PROFILE, format.getInteger(MediaFormat.KEY_AAC_PROFILE));
+			if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE))
+				map.put(MediaFormat.KEY_MAX_INPUT_SIZE, format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
+			if (format.containsKey("what"))
+				map.put("what", format.getInteger("what"));
+			if (format.containsKey("csd-0"))
+				map.put("csd-0", asString(format.getByteBuffer("csd-0")));
+			if (format.containsKey("csd-1"))
+				map.put("csd-1", asString(format.getByteBuffer("csd-1")));
+		} catch (JSONException e) {
+			Log.e(TAG_STATIC, "writeFormat:", e);
+		}
+
+		return map.toString();
+	}
+
+	private static final MediaFormat asMediaFormat(final String format_str) {
+		final MediaFormat format = new MediaFormat();
+		try {
+			final JSONObject map = new JSONObject(format_str);
+			if (map.has(MediaFormat.KEY_MIME))
+				format.setString(MediaFormat.KEY_MIME, (String)map.get(MediaFormat.KEY_MIME));
+			if (map.has(MediaFormat.KEY_WIDTH))
+				format.setInteger(MediaFormat.KEY_WIDTH, (Integer)map.get(MediaFormat.KEY_WIDTH));
+			if (map.has(MediaFormat.KEY_HEIGHT))
+				format.setInteger(MediaFormat.KEY_HEIGHT, (Integer)map.get(MediaFormat.KEY_HEIGHT));
+			if (map.has(MediaFormat.KEY_BIT_RATE))
+				format.setInteger(MediaFormat.KEY_BIT_RATE, (Integer)map.get(MediaFormat.KEY_BIT_RATE));
+			if (map.has(MediaFormat.KEY_COLOR_FORMAT))
+				format.setInteger(MediaFormat.KEY_COLOR_FORMAT, (Integer)map.get(MediaFormat.KEY_COLOR_FORMAT));
+			if (map.has(MediaFormat.KEY_FRAME_RATE))
+				format.setInteger(MediaFormat.KEY_FRAME_RATE, (Integer)map.get(MediaFormat.KEY_FRAME_RATE));
+			if (map.has(MediaFormat.KEY_I_FRAME_INTERVAL))
+				format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, (Integer)map.get(MediaFormat.KEY_I_FRAME_INTERVAL));
+			if (map.has(MediaFormat.KEY_MAX_INPUT_SIZE))
+				format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, (Integer)map.get(MediaFormat.KEY_MAX_INPUT_SIZE));
+			if (map.has(MediaFormat.KEY_DURATION))
+				format.setInteger(MediaFormat.KEY_DURATION, (Integer)map.get(MediaFormat.KEY_DURATION));
+			if (map.has(MediaFormat.KEY_CHANNEL_COUNT))
+				format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, (Integer) map.get(MediaFormat.KEY_CHANNEL_COUNT));
+			if (map.has(MediaFormat.KEY_SAMPLE_RATE))
+				format.setInteger(MediaFormat.KEY_SAMPLE_RATE, (Integer) map.get(MediaFormat.KEY_SAMPLE_RATE));
+			if (map.has(MediaFormat.KEY_CHANNEL_MASK))
+				format.setInteger(MediaFormat.KEY_CHANNEL_MASK, (Integer) map.get(MediaFormat.KEY_CHANNEL_MASK));
+			if (map.has(MediaFormat.KEY_AAC_PROFILE))
+				format.setInteger(MediaFormat.KEY_AAC_PROFILE, (Integer) map.get(MediaFormat.KEY_AAC_PROFILE));
+			if (map.has(MediaFormat.KEY_MAX_INPUT_SIZE))
+				format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, (Integer) map.get(MediaFormat.KEY_MAX_INPUT_SIZE));
+			if (map.has("what"))
+				format.setInteger("what", (Integer)map.get("what"));
+			if (map.has("csd-0"))
+				format.setByteBuffer("csd-0", asByteBuffer((String)map.get("csd-0")));
+			if (map.has("csd-1"))
+				format.setByteBuffer("csd-1", asByteBuffer((String)map.get("csd-1")));
+		} catch (JSONException e) {
+			Log.e(TAG_STATIC, "writeFormat:", e);
+		}
+		return format;
+	}
+
+	private static final byte[] RESERVED = new byte[40];
+	/**
+	 * write frame header
+	 * @param presentation_time_us
+	 * @param size
+	 * @throws IOException
+	 */
+	/*package*/static void writeHeader(final DataOutputStream out,
+		final int sequence, final int frame_number,
+		final long presentation_time_us, final int size, final int flag) throws IOException {
+
+		out.writeInt(sequence);
+		out.writeInt(frame_number);
+		out.writeLong(presentation_time_us);
+		out.writeInt(size);
+		out.writeInt(flag);
+		//
+		out.write(RESERVED, 0, 40);
+	}
+
+	/*package*/static TLMediaFrameHeader readHeader(final DataInputStream in, final TLMediaFrameHeader header) throws IOException {
+		header.size = 0;
+		header.sequence = in.readInt();
+		header.frameNumber = in.readInt();	// frame number
+		header.presentationTimeUs = in.readLong();
+		header.size = in.readInt();
+		header.flags = in.readInt();
+		in.skipBytes(40);	// long x 5
+		return header;
+	}
+
+	/*package*/static TLMediaFrameHeader readHeader(final DataInputStream in) throws IOException {
+		final TLMediaFrameHeader header = new TLMediaFrameHeader();
+		return readHeader(in, header);
+	}
+
+	/**
+	 * read frame header and only returns size of frame
+	 * @param in
+	 * @return
+	 * @throws IOException
+	 */
+	/*package*/static int readFrameSize(final DataInputStream in) throws IOException {
+		final TLMediaFrameHeader header = readHeader(in);
+		return header.size;
+	}
+
 	/**
 	 * write MediaFormat data into intermediate file
 	 * @param out
-	 * @param format
+	 * @param output_format
 	 */
-	/*package*/static void writeFormat(final ObjectOutputStream out, final MediaFormat format) throws IOException {
-		if (DEBUG) Log.v(TAG_STATIC, "writeFormat:format=" + format);
-		final HashMap<String, Object> map = new HashMap<String, Object>();
-		if (format.containsKey(MediaFormat.KEY_MIME))
-			map.put(MediaFormat.KEY_MIME, format.getString(MediaFormat.KEY_MIME));
-		if (format.containsKey(MediaFormat.KEY_WIDTH))
-			map.put(MediaFormat.KEY_WIDTH, format.getInteger(MediaFormat.KEY_WIDTH));
-		if (format.containsKey(MediaFormat.KEY_HEIGHT))
-			map.put(MediaFormat.KEY_HEIGHT, format.getInteger(MediaFormat.KEY_HEIGHT));
-		if (format.containsKey(MediaFormat.KEY_BIT_RATE))
-			map.put(MediaFormat.KEY_BIT_RATE, format.getInteger(MediaFormat.KEY_BIT_RATE));
-		if (format.containsKey(MediaFormat.KEY_COLOR_FORMAT))
-			map.put(MediaFormat.KEY_COLOR_FORMAT, format.getInteger(MediaFormat.KEY_COLOR_FORMAT));
-		if (format.containsKey(MediaFormat.KEY_FRAME_RATE))
-			map.put(MediaFormat.KEY_FRAME_RATE, format.getInteger(MediaFormat.KEY_FRAME_RATE));
-		if (format.containsKey(MediaFormat.KEY_I_FRAME_INTERVAL))
-			map.put(MediaFormat.KEY_I_FRAME_INTERVAL, format.getInteger(MediaFormat.KEY_I_FRAME_INTERVAL));
-		if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE))
-			map.put(MediaFormat.KEY_MAX_INPUT_SIZE, format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
-		if (format.containsKey(MediaFormat.KEY_DURATION))
-			map.put(MediaFormat.KEY_DURATION, format.getInteger(MediaFormat.KEY_DURATION));
-		if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
-			map.put(MediaFormat.KEY_CHANNEL_COUNT, format.getInteger(MediaFormat.KEY_CHANNEL_COUNT));
-		if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE))
-			map.put(MediaFormat.KEY_SAMPLE_RATE, format.getInteger(MediaFormat.KEY_SAMPLE_RATE));
-		if (format.containsKey(MediaFormat.KEY_CHANNEL_MASK))
-			map.put(MediaFormat.KEY_CHANNEL_MASK, format.getInteger(MediaFormat.KEY_CHANNEL_MASK));
-		if (format.containsKey(MediaFormat.KEY_AAC_PROFILE))
-			map.put(MediaFormat.KEY_AAC_PROFILE, format.getInteger(MediaFormat.KEY_AAC_PROFILE));
-		if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE))
-			map.put(MediaFormat.KEY_MAX_INPUT_SIZE, format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
-		if (format.containsKey("what"))
-			map.put("what", format.getInteger("what"));
-		if (format.containsKey("csd-0"))
-			map.put("csd-0", asString(format.getByteBuffer("csd-0")));
-		if (format.containsKey("csd-1"))
-			map.put("csd-1", asString(format.getByteBuffer("csd-1")));
-
-		if (DEBUG) Log.v(TAG_STATIC, "writeFormat:map=" + map);
-		final String format_str = map.toString();
-		final int size = TextUtils.isEmpty(format_str) ? 0 : format_str.length();
+	private static final void writeFormat(final DataOutputStream out, final MediaFormat codec_format, final MediaFormat output_format) throws IOException {
+		if (DEBUG) Log.v(TAG_STATIC, "writeFormat:format=" + output_format);
+		final String codec_format_str = asString(codec_format);
+		final String output_format_str = asString(output_format);
+		final int size = (TextUtils.isEmpty(codec_format_str) ? 0 : codec_format_str.length())
+			+ (TextUtils.isEmpty(output_format_str) ? 0 : output_format_str.length());
 		try {
-			writeHeader(out, -1, size, 0);
-			out.writeObject(map);
+			writeHeader(out, 0, 0, -1, size, 0);
+			out.writeUTF(codec_format_str);
+			out.writeUTF(output_format_str);
 		} catch (IOException e) {
 			Log.e(TAG_STATIC, "writeFormat:", e);
 			throw e;
 		}
 	}
 
-	/*package*/static MediaFormat readFormat(final ObjectInputStream in) {
+	/*package*/static MediaFormat readFormat(final DataInputStream in) {
 		MediaFormat format = null;
 		try {
-			final int size = readHeader(in);
-			final HashMap<String, Object> map = (HashMap<String, Object>)in.readObject();
-			if (map != null) {
-				if (DEBUG) Log.v(TAG_STATIC, "readFormat:map=" + map);
-				format = new MediaFormat();
-				if (map.containsKey(MediaFormat.KEY_MIME))
-					format.setString(MediaFormat.KEY_MIME, (String)map.get(MediaFormat.KEY_MIME));
-				if (map.containsKey(MediaFormat.KEY_WIDTH))
-					format.setInteger(MediaFormat.KEY_WIDTH, (Integer)map.get(MediaFormat.KEY_WIDTH));
-				if (map.containsKey(MediaFormat.KEY_HEIGHT))
-					format.setInteger(MediaFormat.KEY_HEIGHT, (Integer)map.get(MediaFormat.KEY_HEIGHT));
-				if (map.containsKey(MediaFormat.KEY_BIT_RATE))
-					format.setInteger(MediaFormat.KEY_BIT_RATE, (Integer)map.get(MediaFormat.KEY_BIT_RATE));
-				if (map.containsKey(MediaFormat.KEY_COLOR_FORMAT))
-					format.setInteger(MediaFormat.KEY_COLOR_FORMAT, (Integer)map.get(MediaFormat.KEY_COLOR_FORMAT));
-				if (map.containsKey(MediaFormat.KEY_FRAME_RATE))
-					format.setInteger(MediaFormat.KEY_FRAME_RATE, (Integer)map.get(MediaFormat.KEY_FRAME_RATE));
-				if (map.containsKey(MediaFormat.KEY_I_FRAME_INTERVAL))
-					format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, (Integer)map.get(MediaFormat.KEY_I_FRAME_INTERVAL));
-				if (map.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE))
-					format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, (Integer)map.get(MediaFormat.KEY_MAX_INPUT_SIZE));
-				if (map.containsKey(MediaFormat.KEY_DURATION))
-					format.setInteger(MediaFormat.KEY_DURATION, (Integer)map.get(MediaFormat.KEY_DURATION));
-				if (map.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
-					format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, (Integer) map.get(MediaFormat.KEY_CHANNEL_COUNT));
-				if (map.containsKey(MediaFormat.KEY_SAMPLE_RATE))
-					format.setInteger(MediaFormat.KEY_SAMPLE_RATE, (Integer) map.get(MediaFormat.KEY_SAMPLE_RATE));
-				if (map.containsKey(MediaFormat.KEY_CHANNEL_MASK))
-					format.setInteger(MediaFormat.KEY_CHANNEL_MASK, (Integer) map.get(MediaFormat.KEY_CHANNEL_MASK));
-				if (map.containsKey(MediaFormat.KEY_AAC_PROFILE))
-					format.setInteger(MediaFormat.KEY_AAC_PROFILE, (Integer) map.get(MediaFormat.KEY_AAC_PROFILE));
-				if (map.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE))
-					format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, (Integer) map.get(MediaFormat.KEY_MAX_INPUT_SIZE));
-				if (map.containsKey("what"))
-					format.setInteger("what", (Integer)map.get("what"));
-				if (map.containsKey("csd-0"))
-					format.setByteBuffer("csd-0", asByteBuffer((String)map.get("csd-0")));
-				if (map.containsKey("csd-1"))
-					format.setByteBuffer("csd-1", asByteBuffer((String)map.get("csd-1")));
-			}
-		} catch (ClassNotFoundException e) {
-			Log.e(TAG_STATIC, "readFormat:", e);
+			readHeader(in);
+			in.readUTF();	// skip MediaFormat data for configure
+			format = asMediaFormat(in.readUTF());
 		} catch (IOException e) {
 			Log.e(TAG_STATIC, "readFormat:", e);
 		}
@@ -947,21 +1020,27 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 	}
 
 	/**
-	 * 生ビットストリームを一時ファイルへ出力する
+	 * write raw bit stream into specific intermediate file
+	 * @param out
+	 * @param sequence
+	 * @param frame_number
 	 * @param info
 	 * @param buffer
+	 * @param writeBuffer
+	 * @throws IOException
 	 */
-	protected static void writeStream(final ObjectOutputStream out, final MediaCodec.BufferInfo info,
+	private static final void writeStream(final DataOutputStream out,
+		final int sequence, final int frame_number,
+		final MediaCodec.BufferInfo info,
 		final ByteBuffer buffer, byte[] writeBuffer) throws IOException {
 
-		if (DEBUG) Log.v(TAG_STATIC, String.format("writeStream:size=%d", info.size));
 		if (writeBuffer.length < info.size) {
 			writeBuffer = new byte[info.size];
 		}
 		buffer.position(info.offset);
 		buffer.get(writeBuffer, 0, info.size);
 		try {
-			writeHeader(out, info.presentationTimeUs, info.size, info.flags);
+			writeHeader(out, sequence, frame_number, info.presentationTimeUs, info.size, info.flags);
 			out.write(writeBuffer, 0, info.size);
 		} catch (IOException e) {
 			if (DEBUG) Log.e(TAG_STATIC, "writeStream:", e);
@@ -969,70 +1048,47 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 		}
 	}
 
-	/*package*/static void readStream(final ObjectInputStream in, final MediaCodec.BufferInfo info,
-		final ByteBuffer buffer, byte[] readBuffer) throws IOException, BufferOverflowException {
+	/**
+	 * read raw bit stream from specific intermediate file
+	 * @param in
+	 * @param header
+	 * @param buffer
+	 * @param readBuffer
+	 * @throws IOException
+	 * @throws BufferOverflowException
+	 */
+	/*package*/static void readStream(final DataInputStream in,
+		final TLMediaFrameHeader header,
+		final ByteBuffer buffer, final byte[] readBuffer) throws IOException, BufferOverflowException {
 
-		readHeader(in, info);
-//		if (DEBUG) Log.v(TAG_STATIC, String.format("readStream:size=%d,capacity=%d", info.size, buffer.capacity()));
+		readHeader(in, header);
 		buffer.clear();
-		if (info.size > buffer.capacity()) {
-			in.skipBytes(info.size);	// このフレームはスキップする
+		if (header.size > buffer.capacity()) {
+			in.skipBytes(header.size);	// skip this frame
 			throw new BufferOverflowException();
 		}
-		final int max_bytes = Math.min(readBuffer.length, info.size);
+		final int max_bytes = Math.min(readBuffer.length, header.size);
 		int read_bytes = 0;
-		for (int i = info.size; i > 0; i -= read_bytes) {
+		for (int i = header.size; i > 0; i -= read_bytes) {
 			read_bytes = in.read(readBuffer, 0, Math.min(i, max_bytes));
-//				if (DEBUG) Log.v(TAG_STATIC, String.format("readStream:read_bytes=%d", read_bytes));
 			if (read_bytes <= 0) break;
 			buffer.put(readBuffer, 0, read_bytes);
 		}
 		buffer.flip();
-//		if (DEBUG) Log.v(TAG_STATIC, String.format("readStream:offset=%d,size=%d,buffer=", info.offset, info.size) + buffer);
 	}
 
-    /**
-     * Handler class to handle the asynchronous request to encoder thread
-     */
-//	private static final class EncoderHandler extends Handler {
-//		private final WeakReference<TLMediaEncoder> mWeakEncoder;
-//
-//		public EncoderHandler(TLMediaEncoder encoder) {
-//			mWeakEncoder = new WeakReference<TLMediaEncoder>(encoder);
-//		}
-//
-//		/**
-//		 * message handler
-//		 */
-//		@Override
-//		public final void handleMessage(final Message inputMessage) {
-//			final int what = inputMessage.what;
-//			final TLMediaEncoder encoder = mWeakEncoder.get();
-//			if (encoder == null) {
-//				Log.w("EncoderHandler", "EncoderHandler#handleMessage: encoder is null");
-//				return;
-//			}
-//			switch (what) {
-//			case MSG_FRAME_AVAILABLE:
-//				encoder.drain();
-//				break;
-//			case MSG_PAUSE_RECORDING:
-//				encoder.handlePauseRecording();
-//				synchronized (encoder.mSync) {
-//					encoder.mSync.notifyAll();
-//				}
-//				break;
-//			case MSG_STOP_RECORDING:
-//				encoder.handleStopRecording();
-//				synchronized (encoder.mSync) {
-//					encoder.mSync.notifyAll();
-//				}
-//				Looper.myLooper().quit();
-//				break;
-//			default:
-//				throw new RuntimeException("unknown message what=" + what);
-//			}
-//		}
-//	}
+	/**
+	 * delete specific file/directory recursively
+	 * @param path
+	 */
+	/*package*/static final void delete(final File path) {
+		if (path.isDirectory()) {
+			File[] files = path.listFiles();
+			final int n = files != null ? files.length : 0;
+			for (int i = 0; i < n; i++)
+				delete(files[i]);
+		}
+		path.delete();
+	}
 
 }

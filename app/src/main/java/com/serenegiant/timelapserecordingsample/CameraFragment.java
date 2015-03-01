@@ -44,7 +44,7 @@ import com.serenegiant.media.TLMediaVideoEncoder;
 import java.io.IOException;
 
 public class CameraFragment extends Fragment {
-	private static final boolean DEBUG = true;	// TODO set false on internal_release
+	private static final boolean DEBUG = true;	// TODO set false on releasing
 	private static final String TAG = "CameraFragment";
 	
 	/**
@@ -137,7 +137,7 @@ public class CameraFragment extends Fragment {
 		if (DEBUG) Log.v(TAG, "start:");
 		try {
 			mRecordButton.setColorFilter(0xffffff00);	// turn yellow
-			mMovieName = TAG + System.nanoTime();
+			mMovieName = TAG; // + System.nanoTime();
 			if (true) {
 				// for video capturing
 				mVideoEncoder = new TLMediaVideoEncoder(getActivity(), mMovieName, mMediaEncoderListener);

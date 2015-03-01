@@ -24,8 +24,6 @@ package com.serenegiant.media;
  * All files in the folder are under this Apache License, Version 2.0.
 */
 
-import java.io.IOException;
-
 import android.content.Context;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
@@ -36,6 +34,8 @@ import android.util.Log;
 import android.view.Surface;
 
 import com.serenegiant.glutils.RenderHandler;
+
+import java.io.IOException;
 
 /**
  * Video Encoder
@@ -138,7 +138,6 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
 	@Override
 	protected MediaFormat internal_prepare() throws IOException {
 		if (DEBUG) Log.i(TAG, "prepare: ");
-        mIsEOS = false;
 
         final MediaCodecInfo videoCodecInfo = selectVideoCodec(MIME_TYPE);
         if (videoCodecInfo == null) {
@@ -152,16 +151,19 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
 		return format;
 	}
 
-	protected void internal_configure(final MediaFormat format) throws IOException {
+	@Override
+	protected MediaCodec internal_configure(MediaCodec previous_codec, final MediaFormat format) throws IOException {
 		format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);	// API >= 18
 		format.setInteger(MediaFormat.KEY_BIT_RATE, mBitRate > 0 ? mBitRate : calcBitRate());
 		format.setInteger(MediaFormat.KEY_FRAME_RATE, mFrameRate);
 		format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, mIFrameIntervals);
 		if (DEBUG) Log.i(TAG, "format: " + format);
 
-		mMediaCodec = MediaCodec.createEncoderByType(MIME_TYPE);
-		mMediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-		mSurface = mMediaCodec.createInputSurface();	// API >= 18
+		if (previous_codec == null)
+			previous_codec = MediaCodec.createEncoderByType(MIME_TYPE);
+		previous_codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+		mSurface = previous_codec.createInputSurface();	// API >= 18
+		return previous_codec;
 	}
 
 	public void setEglContext(EGLContext shared_context, int tex_id) {
@@ -211,15 +213,15 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
             }
             // select first codec that match a specific MIME type and color format
             final String[] types = codecInfo.getSupportedTypes();
-            for (int j = 0; j < types.length; j++) {
-                if (types[j].equalsIgnoreCase(mimeType)) {
-                	if (DEBUG) Log.i(TAG, "codec:" + codecInfo.getName() + ",MIME=" + types[j]);
-            		int format = selectColorFormat(codecInfo, mimeType);
-                	if (format > 0) {
-                		return codecInfo;
-                	}
-                }
-            }
+			for (String type : types) {
+				if (type.equalsIgnoreCase(mimeType)) {
+					if (DEBUG) Log.i(TAG, "codec:" + codecInfo.getName() + ",MIME=" + type);
+					int format = selectColorFormat(codecInfo, mimeType);
+					if (format > 0) {
+						return codecInfo;
+					}
+				}
+			}
         }
         return null;
     }
@@ -238,12 +240,9 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
     	} finally {
     		Thread.currentThread().setPriority(Thread.NORM_PRIORITY);
     	}
-        int colorFormat;
-        for (int i = 0; i < caps.colorFormats.length; i++) {
-        	colorFormat = caps.colorFormats[i];
+        for (int colorFormat: caps.colorFormats) {
             if (isRecognizedVideoFormat(colorFormat)) {
-            	if (result == 0)
-            		result = colorFormat;
+           		result = colorFormat;
                 break;
             }
         }

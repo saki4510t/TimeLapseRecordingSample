@@ -28,7 +28,6 @@ import android.content.Context;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
-import android.os.*;
 import android.util.Log;
 
 /**
@@ -78,7 +77,7 @@ public final class TLMediaAudioEncoder extends AbstractTLMediaAudioEncoder {
 					int readBytes;
 					audioRecord.startRecording();
 					try {
-						while (mIsRunning && isRecording() && !mIsEOS) {
+						while (mIsRunning && isRecording()) {
 							// read audio data from internal mic
 							readBytes = audioRecord.read(buf, 0, buf_sz);
 							if (readBytes > 0) {

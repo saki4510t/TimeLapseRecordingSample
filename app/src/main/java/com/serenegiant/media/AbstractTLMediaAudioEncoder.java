@@ -24,8 +24,6 @@ package com.serenegiant.media;
  * All files in the folder are under this Apache License, Version 2.0.
 */
 
-import java.io.IOException;
-
 import android.content.Context;
 import android.media.AudioFormat;
 import android.media.MediaCodec;
@@ -33,6 +31,8 @@ import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 import android.media.MediaFormat;
 import android.util.Log;
+
+import java.io.IOException;
 
 /**
  * Encoder class to encode audio data with AAC encoder and save into intermediate files
@@ -69,7 +69,6 @@ public abstract class AbstractTLMediaAudioEncoder extends TLMediaEncoder {
 	@Override
 	protected MediaFormat internal_prepare() throws IOException {
 		if (DEBUG) Log.v(TAG, "prepare:");
-		mIsEOS = false;
 		// prepare MediaCodec for AAC encoding of audio data from inernal mic.
 		final MediaCodecInfo audioCodecInfo = selectAudioCodec(MIME_TYPE);
 		if (audioCodecInfo == null) {
@@ -90,10 +89,12 @@ public abstract class AbstractTLMediaAudioEncoder extends TLMediaEncoder {
 	}
 
 	@Override
-	protected void internal_configure(final MediaFormat format) throws IOException {
+	protected MediaCodec internal_configure(MediaCodec codec, final MediaFormat format) throws IOException {
 		if (DEBUG) Log.v(TAG, "internal_configure:");
-		mMediaCodec = MediaCodec.createEncoderByType(MIME_TYPE);
-        mMediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+		if (codec == null)
+			codec = MediaCodec.createEncoderByType(MIME_TYPE);
+		codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+		return codec;
 	}
 
 	@Override
@@ -153,10 +154,8 @@ LOOP:	for (int i = 0; i < numCodecs; i++) {
             for (int j = 0; j < types.length; j++) {
             	if (DEBUG) Log.i("AbstractTLMediaAudioEncoder", "supportedType:" + codecInfo.getName() + ",MIME=" + types[j]);
                 if (types[j].equalsIgnoreCase(mimeType)) {
-                	if (result == null) {
-                		result = codecInfo;
-               			break LOOP;
-                	}
+               		result = codecInfo;
+           			break LOOP;
                 }
             }
         }

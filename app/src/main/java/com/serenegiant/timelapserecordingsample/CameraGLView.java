@@ -84,10 +84,8 @@ public final class CameraGLView extends GLSurfaceView {
 		if (DEBUG) Log.v(TAG, "onResume:");
 		super.onResume();
 		if (mHasSurface) {
-			if (mCameraHandler == null) {
-				if (DEBUG) Log.v(TAG, "surface already exist");
-				startPreview(getWidth(),  getHeight());
-			}
+			if (DEBUG) Log.v(TAG, "surface already exist");
+			startPreview(getWidth(),  getHeight());
 		}
 	}
 

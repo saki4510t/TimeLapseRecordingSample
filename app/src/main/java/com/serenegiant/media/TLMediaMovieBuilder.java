@@ -24,21 +24,6 @@ package com.serenegiant.media;
  * All files in the folder are under this Apache License, Version 2.0.
 */
 
-import java.io.BufferedInputStream;
-import java.io.DataInputStream;
-import java.io.EOFException;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.nio.BufferOverflowException;
-import java.nio.ByteBuffer;
-import java.text.SimpleDateFormat;
-import java.util.GregorianCalendar;
-import java.util.Locale;
-import java.util.concurrent.LinkedBlockingQueue;
-
 import android.content.Context;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
@@ -46,6 +31,15 @@ import android.media.MediaMuxer;
 import android.os.Environment;
 import android.text.TextUtils;
 import android.util.Log;
+
+import java.io.DataInputStream;
+import java.io.File;
+import java.io.IOException;
+import java.nio.BufferOverflowException;
+import java.nio.ByteBuffer;
+import java.text.SimpleDateFormat;
+import java.util.GregorianCalendar;
+import java.util.Locale;
 
 /**
  * Builder class to build actual mp4 file from intermediate files made by TLMediaEncoder and it's inheritor
@@ -57,13 +51,10 @@ public class TLMediaMovieBuilder {
 	private static final int MAX_BUF_SIZE = 1024 * 1024;
 	private static final long MSEC30US = 1000000 / 30;
 	private static String DIR_NAME = "Serenegiant";
-    private static final SimpleDateFormat mDateTimeFormat = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss", Locale.US);
 
-	private final Object mSync = new Object();
 	private final File mBaseDir;
 	private String mOutputPath;
-	private TLMediaMovieBuilderCallback mCallback;
-	private volatile boolean mIsRunning;
+	private MuxerTask mMuxerTask;
 
 	public interface TLMediaMovieBuilderCallback {
 		/**
@@ -94,21 +85,9 @@ public class TLMediaMovieBuilder {
 	 * @param movie_name directory name where intermediate files exist
 	 * @throws IOException
 	 */
-	public TLMediaMovieBuilder(Context context, String movie_name) throws IOException {
+	public TLMediaMovieBuilder(final Context context, final String movie_name) throws IOException {
 		mBaseDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), movie_name);
 		mOutputPath  = getCaptureFile(Environment.DIRECTORY_MOVIES, ".mp4").toString();
-	}
-
-	public void setCallback(TLMediaMovieBuilderCallback callback) {
-		synchronized (mSync) {
-			mCallback = callback;
-		}
-	}
-
-	public TLMediaMovieBuilderCallback getCallback() {
-		synchronized (mSync) {
-			return mCallback;
-		}
 	}
 
 	/**
@@ -116,9 +95,7 @@ public class TLMediaMovieBuilder {
 	 * @return
 	 */
 	public String getOutputPath() {
-		synchronized (mSync) {
-			return mOutputPath;
-		}
+		return mOutputPath;
 	}
 
 	/**
@@ -126,26 +103,31 @@ public class TLMediaMovieBuilder {
 	 * @param path
 	 */
 	public void setOutputPath(final String path) {
-		synchronized (mSync) {
-			mOutputPath = path;
-		}
+		mOutputPath = path;
 	}
 
 	/**
 	 * build movie file from intermediate file.
 	 * this method is executed asynchronously.
 	 */
-	public void build() {
+	public synchronized void build(final TLMediaMovieBuilderCallback callback) {
 		if (DEBUG) Log.v(TAG, "build:");
-		new Thread(MuxerTask, TAG).start();
+		if (mMuxerTask != null) {
+			mMuxerTask.cancel();
+		}
+		mMuxerTask = new MuxerTask(this, callback);
+		mMuxerTask.start();
 	}
 
-	/**
-	 * cancel movie building.
-	 * This is only valid while building.
-	 */
-	public void cancel() {
-		mIsRunning = false;
+	public synchronized void cancel() {
+		if (mMuxerTask != null) {
+			mMuxerTask.cancel();
+		}
+	}
+
+	private final synchronized void finishBuild(MuxerTask muxer_task) {
+		if (muxer_task.equals(mMuxerTask))
+			mMuxerTask = null;
 	}
 
 //**********************************************************************
@@ -172,80 +154,94 @@ public class TLMediaMovieBuilder {
      */
     private static final String getDateTimeString() {
     	final GregorianCalendar now = new GregorianCalendar();
-    	return mDateTimeFormat.format(now.getTime());
+		final SimpleDateFormat dateTimeFormat = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss", Locale.US);
+    	return dateTimeFormat.format(now.getTime());
     }
 
 	/**
 	 * building task executing on private thread
 	 */
-	private final Runnable MuxerTask = new Runnable() {
+	private static final class MuxerTask extends Thread {
+		private final Object mSync = new Object();
+		private final TLMediaMovieBuilder mBuilder;
+		private final File mMovieDir;
+		private final TLMediaMovieBuilderCallback mCallback;
+		private final String mMuxerFilePath;
+
+		private volatile boolean mIsRunning = true;
+
+		public MuxerTask(final TLMediaMovieBuilder builder, final TLMediaMovieBuilderCallback callback) {
+			super(TAG);
+			mBuilder = builder;
+			mMovieDir = builder.mBaseDir;
+			mCallback = callback;
+			mMuxerFilePath = builder.mOutputPath;
+		}
+
+		public void cancel() {
+			mIsRunning = false;
+		}
+
 		@Override
 		public void run() {
 			if (DEBUG) Log.v(TAG, "MuxerTask#run");
-			String path;
-			synchronized (mSync) {
-				path = mOutputPath;
-			}
 			boolean isMuxerStarted = false;
-			mIsRunning = true;
  			try {
-				final MediaMuxer muxer = new MediaMuxer(path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+				final MediaMuxer muxer = new MediaMuxer(mMuxerFilePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
 				if (muxer != null)
 				try {
-					int videoSequence = -1;
-					int audioSequence = -1;
 					int videoTrack = -1;
 					int audioTrack = -1;
-					long videoTimeOffset = 0, videoPresentationTimeUs = -1;
-					long audioTimeOffset = 0, audioPresentationTimeUs = -1;
-					ObjectInputStream videoIn = changeInput(null, 0, ++videoSequence);
+					DataInputStream videoIn = TLMediaEncoder.openInputStream(mMovieDir, TLMediaEncoder.TYPE_VIDEO, 0); // changeInput(null, 0, ++videoSequence);
 					if (videoIn != null) {
 						final MediaFormat format = TLMediaEncoder.readFormat(videoIn);
 						if (format != null) {
 							videoTrack = muxer.addTrack(format);
 							if (DEBUG) Log.v(TAG, "found video data:format=" + format + "track=" + videoTrack);
-							videoIn = changeInput(videoIn, 0, ++videoSequence);
-							if (videoIn == null)
-								videoTrack = -1;
-							if (DEBUG) Log.v(TAG, "videoIn=" + videoIn);
 						}
 					}
-					ObjectInputStream audioIn = changeInput(null, 1, ++audioSequence);
+					DataInputStream audioIn = TLMediaEncoder.openInputStream(mMovieDir, TLMediaEncoder.TYPE_AUDIO, 0); // changeInput(null, 1, ++audioSequence);
 					if (audioIn != null) {
 						final MediaFormat format = TLMediaEncoder.readFormat(audioIn);
 						if (format != null) {
 							audioTrack = muxer.addTrack(format);
 							if (DEBUG) Log.v(TAG, "found audio data:format=" + format + "track=" + audioTrack);
-							audioIn = changeInput(audioIn, 1, ++audioSequence);
-							if (audioIn == null)
-								audioTrack = -1;
-							if (DEBUG) Log.v(TAG, "audioIn=" + audioIn);
 						}
 					}
 					if ((videoTrack >= 0) || (audioTrack >= 0)) {
 						if (DEBUG) Log.v(TAG, "start muxing");
 						ByteBuffer videoBuf = null;
 						MediaCodec.BufferInfo videoBufInfo = null;
+						TLMediaEncoder.TLMediaFrameHeader videoFrameHeader = null;
 						if (videoTrack >= 0) {
 							videoBuf = ByteBuffer.allocateDirect(64 * 1024);
 							videoBufInfo = new MediaCodec.BufferInfo();
+							videoFrameHeader = new TLMediaEncoder.TLMediaFrameHeader();
 						}
 						ByteBuffer audioBuf = null;
 						MediaCodec.BufferInfo audioBufInfo = new MediaCodec.BufferInfo();
+						TLMediaEncoder.TLMediaFrameHeader audioFrameHeader = null;
 						if (audioTrack >= 0) {
 							audioBuf = ByteBuffer.allocateDirect(64 * 1024);
 							audioBufInfo = new MediaCodec.BufferInfo();
+							audioFrameHeader = new TLMediaEncoder.TLMediaFrameHeader();
 						}
 						byte[] readBuf = new byte[64 * 1024];
 						isMuxerStarted = true;
+						int videoSequence = 0;
+						int audioSequence = 0;
+						long videoTimeOffset = -1, videoPresentationTimeUs = -MSEC30US;
+						long audioTimeOffset = -1, audioPresentationTimeUs = -MSEC30US;
 						muxer.start();
 						for (; mIsRunning && ((videoTrack >= 0) || (audioTrack >= 0)); ) {
 							if (videoTrack >= 0) {
 								if (videoIn != null) {
 									try {
-										TLMediaEncoder.readStream(videoIn, videoBufInfo, videoBuf, readBuf);
-										if (videoPresentationTimeUs < 0) {
-											videoTimeOffset = -videoPresentationTimeUs - videoBufInfo.presentationTimeUs + MSEC30US;
+										TLMediaEncoder.readStream(videoIn, videoFrameHeader, videoBuf, readBuf);
+										videoFrameHeader.asBufferInfo(videoBufInfo);
+										if (videoSequence !=  videoFrameHeader.sequence) {
+											videoSequence = videoFrameHeader.sequence;
+											videoTimeOffset = videoPresentationTimeUs - videoBufInfo.presentationTimeUs + MSEC30US;
 										}
 										videoBufInfo.presentationTimeUs += videoTimeOffset;
 										muxer.writeSampleData(videoTrack, videoBuf, videoBufInfo);
@@ -253,9 +249,11 @@ public class TLMediaMovieBuilder {
 									} catch (BufferOverflowException e) {
 										if ((videoBufInfo.size > 0) && (videoBufInfo.size < MAX_BUF_SIZE) && (videoBuf.capacity() < videoBufInfo.size))
 											videoBuf = ByteBuffer.allocateDirect(videoBufInfo.size);
+									} catch (IllegalArgumentException e) {
+										if (DEBUG) Log.d(TAG, String.format("MuxerTask:size=%d,presentationTimeUs=%d,",
+											videoBufInfo.size, videoBufInfo.presentationTimeUs) + videoFrameHeader, e);
 									} catch (IOException e) {
-										videoIn = changeInput(videoIn, 0, ++videoSequence);
-										videoPresentationTimeUs = -videoPresentationTimeUs;
+										videoTrack = -1;	// end
 									}
 								} else {
 									videoTrack = -1;	// end
@@ -264,9 +262,11 @@ public class TLMediaMovieBuilder {
 							if (audioTrack >= 0) {
 								if (audioIn != null) {
 									try {
-										TLMediaEncoder.readStream(audioIn, audioBufInfo, audioBuf, readBuf);
-										if (audioPresentationTimeUs < 0) {
-											audioTimeOffset = -audioPresentationTimeUs - audioBufInfo.presentationTimeUs + MSEC30US;
+										TLMediaEncoder.readStream(audioIn, audioFrameHeader, audioBuf, readBuf);
+										audioFrameHeader.asBufferInfo(audioBufInfo);
+										if (audioSequence !=  audioFrameHeader.sequence) {
+											audioSequence = audioFrameHeader.sequence;
+											audioTimeOffset = audioPresentationTimeUs - audioBufInfo.presentationTimeUs + MSEC30US;
 										}
 										audioBufInfo.presentationTimeUs += audioTimeOffset;
 										muxer.writeSampleData(audioTrack, audioBuf, audioBufInfo);
@@ -275,8 +275,7 @@ public class TLMediaMovieBuilder {
 										if ((audioBufInfo.size > 0) && (audioBufInfo.size < MAX_BUF_SIZE) && (audioBuf.capacity() < audioBufInfo.size))
 											audioBuf = ByteBuffer.allocateDirect(audioBufInfo.size);
 									} catch (IOException e) {
-										audioIn = changeInput(audioIn, 1, ++audioSequence);
-										audioPresentationTimeUs = -audioPresentationTimeUs;
+										audioTrack = -1;	// end
 									}
 								} else {
 									audioTrack = -1;	// end
@@ -285,57 +284,34 @@ public class TLMediaMovieBuilder {
 						}
 						muxer.stop();
 					}
+					if (videoIn != null) {
+						videoIn.close();
+					}
+					if (audioIn != null) {
+						audioIn.close();
+					}
 				} finally {
 					muxer.release();
 				}
 			} catch (Exception e) {
 				Log.w(TAG, "failed to build movie file:", e);
+				mIsRunning = false;
 				synchronized (mSync) {
-					mOutputPath = null;
 					if (mCallback != null) {
 						mCallback.onError(e);
 					}
 				}
 			}
 			// remove intermediate files and its directory
-			delete(mBaseDir);
+			TLMediaEncoder.delete(mMovieDir);
+			mBuilder.finishBuild(this);
 			if (DEBUG) Log.v(TAG, "MuxerTask#finished");
 			synchronized (mSync) {
 				if (mCallback != null) {
-					mCallback.onFinished(mIsRunning && isMuxerStarted ? mOutputPath : null);
+					mCallback.onFinished(mIsRunning && isMuxerStarted ? mMuxerFilePath : null);
 				}
 			}
 		}
 
-		private final ObjectInputStream changeInput(ObjectInputStream old, int type, int sequence) throws IOException {
-			if (DEBUG) Log.v(TAG, "changeInput:type=" + type + ",sequence=" + sequence);
-			if (old != null) {
-				old.close();
-			}
-			final String path = TLMediaEncoder.getSequenceFilePath(mBaseDir, type, sequence);
-			ObjectInputStream in = null;
-			try {
-				in = new ObjectInputStream(new BufferedInputStream((new FileInputStream(path))));
-			} catch (EOFException e) {
-//				if (DEBUG) Log.e(TAG, "changeInput:" + path, e);
-			} catch (FileNotFoundException e) {
-//				if (DEBUG) Log.e(TAG, "changeInput:" + path, e);
-			}
-			return in;
-		}
-
-		/**
-		 * delete specific file/directory recursively
-		 * @param path
-		 */
-		private final void delete(final File path) {
-			if (path.isDirectory()) {
-				File[] files = path.listFiles();
-				final int n = files != null ? files.length : 0;
-				for (int i = 0; i < n; i++)
-					delete(files[i]);
-			}
-			path.delete();
-		}
-	};
+	}
 }
