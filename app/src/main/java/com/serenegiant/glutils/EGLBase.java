@@ -39,7 +39,7 @@ import android.view.SurfaceView;
 
 @TargetApi(Build.VERSION_CODES.JELLY_BEAN_MR2)
 public class EGLBase {	// API >= 17 
-	private static final boolean DEBUG = true;	// TODO set false on internal_release
+	private static final boolean DEBUG = false;	// TODO set false on releasing
 	private static final String TAG = "EGLBase";
 
     private static final int EGL_RECORDABLE_ANDROID = 0x3142;
@@ -52,6 +52,7 @@ public class EGLBase {	// API >= 17
 	public static class EglSurface {
 		private final EGLBase mEgl;
 		private EGLSurface mEglSurface = EGL14.EGL_NO_SURFACE;
+		private final int mWidth, mHeight;
 
 		EglSurface(EGLBase egl, Object surface) {
 			if (DEBUG) Log.v(TAG, "EglSurface:");
@@ -62,12 +63,17 @@ public class EGLBase {	// API >= 17
 				throw new IllegalArgumentException("unsupported surface");
 			mEgl = egl;
 			mEglSurface = mEgl.createWindowSurface(surface);
+			mWidth = mEgl.querySurface(mEglSurface, EGL14.EGL_WIDTH);
+			mHeight = mEgl.querySurface(mEglSurface, EGL14.EGL_HEIGHT);
+			if (DEBUG) Log.v(TAG, String.format("EglSurface:size(%d,%d)", mWidth, mHeight));
 		}
 
 		EglSurface(EGLBase egl, int width, int height) {
 			if (DEBUG) Log.v(TAG, "EglSurface:");
 			mEgl = egl;
 			mEglSurface = mEgl.createOffscreenSurface(width, height);
+			mWidth = width;
+			mHeight = height;
 		}
 
 		public void makeCurrent() {
@@ -122,6 +128,12 @@ public class EGLBase {	// API >= 17
 
 	public EGLContext getContext() {
 		return mEglContext;
+	}
+
+	public int querySurface(final EGLSurface eglSurface, final int what) {
+		final int[] value = new int[1];
+		EGL14.eglQuerySurface(mEglDisplay, eglSurface, what, value, 0);
+		return value[0];
 	}
 
 	private void init(EGLContext shared_context, boolean with_depth_buffer, boolean isRecordable) {

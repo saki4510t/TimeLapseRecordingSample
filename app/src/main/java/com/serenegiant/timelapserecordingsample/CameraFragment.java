@@ -24,6 +24,7 @@ package com.serenegiant.timelapserecordingsample;
  * All files in the folder are under this Apache License, Version 2.0.
 */
 
+import android.app.Activity;
 import android.app.Fragment;
 import android.media.MediaScannerConnection;
 import android.os.Bundle;
@@ -44,7 +45,7 @@ import com.serenegiant.media.TLMediaVideoEncoder;
 import java.io.IOException;
 
 public class CameraFragment extends Fragment {
-	private static final boolean DEBUG = true;	// TODO set false on releasing
+	private static final boolean DEBUG = false;	// TODO set false on releasing
 	private static final String TAG = "CameraFragment";
 	
 	/**
@@ -57,6 +58,7 @@ public class CameraFragment extends Fragment {
 	private ImageButton mRecordButton;
 	private TLMediaVideoEncoder mVideoEncoder;
 	private TLMediaAudioEncoder mAudioEncoder;
+	private TLMediaMovieBuilder mMuxer;
 	private boolean mIsRecording;
 	private String mMovieName;
 
@@ -68,7 +70,7 @@ public class CameraFragment extends Fragment {
 	public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
 		final View rootView = inflater.inflate(R.layout.fragment_camera, container, false);
 		mCameraView = (CameraGLView)rootView.findViewById(R.id.cameraView);
-		mCameraView.setAspectRatio(1280 / 720.f);
+		mCameraView.setVideoSize(1280, 720);
 		mCameraView.setOnTouchListener(mOnTouchListener);
 		mRecordButton = (ImageButton)rootView.findViewById(R.id.record_button);
 		mRecordButton.setOnClickListener(mOnClickListener);
@@ -111,18 +113,21 @@ public class CameraFragment extends Fragment {
 	private final View.OnTouchListener mOnTouchListener = new View.OnTouchListener() {
 		@Override
 		public boolean onTouch(View v, MotionEvent event) {
-			switch (event.getAction()) {
-			case MotionEvent.ACTION_DOWN:
-				resumeRecording();
-				break;
-			case MotionEvent.ACTION_MOVE:
-				break;
-			case MotionEvent.ACTION_CANCEL:
-			case MotionEvent.ACTION_UP:
-				pauseRecording();
-				break;
-			}
-			return true;
+			if (mIsRecording) {
+				switch (event.getAction()) {
+					case MotionEvent.ACTION_DOWN:
+						resumeRecording();
+						break;
+					case MotionEvent.ACTION_MOVE:
+						break;
+					case MotionEvent.ACTION_CANCEL:
+					case MotionEvent.ACTION_UP:
+						pauseRecording();
+						break;
+				}
+				return true;
+			} else
+				return false;
 		}
 	};
 
@@ -130,7 +135,7 @@ public class CameraFragment extends Fragment {
 	 * start recording
 	 * This is a sample project and call this on UI thread to avoid being complicated
 	 * but basically this should be called on private thread because preparing
-	 * of encoder is heavy work
+	 * of encoder may be heavy work on some devices
 	 */
 	private void startRecording() {
 		if (mIsRecording) return;
@@ -142,6 +147,7 @@ public class CameraFragment extends Fragment {
 				// for video capturing
 				mVideoEncoder = new TLMediaVideoEncoder(getActivity(), mMovieName, mMediaEncoderListener);
 				try {
+					mVideoEncoder.setFormat(mCameraView.getVideoWidth(), mCameraView.getVideoHeight());
 					mVideoEncoder.prepare();
 				} catch (Exception e) {
 					Log.e(TAG, "startRecording:", e);
@@ -150,7 +156,7 @@ public class CameraFragment extends Fragment {
 					throw e;
 				}
 			}
-			if (false) {
+			if (true) {
 				// for audio capturing
 				mAudioEncoder = new TLMediaAudioEncoder(getActivity(), mMovieName, mMediaEncoderListener);
 				try {
@@ -185,19 +191,15 @@ public class CameraFragment extends Fragment {
 		mRecordButton.setColorFilter(0);    // return to default color
 		if (mVideoEncoder != null) {
 			mVideoEncoder.stop();
+			mVideoEncoder.release();
 		}
 		if (mAudioEncoder != null) {
 			mAudioEncoder.stop();
+			mAudioEncoder.release();
 		}
 		try {
-			final TLMediaMovieBuilder muxer = new TLMediaMovieBuilder(getActivity(), mMovieName);
-			muxer.build();
-			final String moviePath = muxer.getOutputPath();
-			// add movie to gallery
-			// this method potentially lead Activity(context) leak
-			// if this method is called when activity is finishing)
-			if (!TextUtils.isEmpty(moviePath))
-				MediaScannerConnection.scanFile(getActivity(), new String[] {moviePath}, null, null);
+			mMuxer = new TLMediaMovieBuilder(getActivity(), mMovieName);
+			mMuxer.build(mTLMediaMovieBuilderCallback);
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
@@ -250,7 +252,9 @@ public class CameraFragment extends Fragment {
 	/**
 	 * callback methods from encoder
 	 */
-	private final TLMediaEncoder.MediaEncoderListener mMediaEncoderListener = new TLMediaEncoder.MediaEncoderListener() {
+	private final TLMediaEncoder.MediaEncoderListener mMediaEncoderListener
+		= new TLMediaEncoder.MediaEncoderListener() {
+
 		@Override
 		public void onPrepared(TLMediaEncoder encoder) {
 			if (DEBUG) Log.v(TAG, "onPrepared:encoder=" + encoder);
@@ -273,6 +277,30 @@ public class CameraFragment extends Fragment {
 			if (DEBUG) Log.v(TAG, "onPause:encoder=" + encoder);
 			if (encoder instanceof TLMediaVideoEncoder)
 				mCameraView.setVideoEncoder(null);
+		}
+	};
+
+	/**
+	 * callback methods from TLMediaMovieBuilder
+	 */
+	private TLMediaMovieBuilder.TLMediaMovieBuilderCallback mTLMediaMovieBuilderCallback
+		= new TLMediaMovieBuilder.TLMediaMovieBuilderCallback() {
+
+		@Override
+		public void onFinished(String output_path) {
+			if (DEBUG) Log.v(TAG, "onFinished:");
+			mMuxer = null;
+			if (!TextUtils.isEmpty(output_path)) {
+				final Activity activity = CameraFragment.this.getActivity();
+				if ((activity == null) || activity.isFinishing()) return;
+				// add movie to gallery
+				MediaScannerConnection.scanFile(activity, new String[] {output_path}, null, null);
+			}
+		}
+
+		@Override
+		public void onError(Exception e) {
+			if (DEBUG) Log.v(TAG, "onError:" + e.getMessage());
 		}
 	};
 }

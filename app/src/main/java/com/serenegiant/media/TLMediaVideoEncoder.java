@@ -41,15 +41,15 @@ import java.io.IOException;
  * Video Encoder
  */
 public class TLMediaVideoEncoder extends TLMediaEncoder {
-	private static final boolean DEBUG = true;
+	private static final boolean DEBUG = false;
 	private static final String TAG = TLMediaVideoEncoder.class.getSimpleName();
 
 	private static final String MIME_TYPE = "video/avc";
     private static final int DEFAULT_VIDEO_WIDTH = 640;
     private static final int DEFAULT_VIDEO_HEIGHT = 480;
-    private static final int DEFAULT_FRAME_RATE = 30;
+    private static final int DEFAULT_FRAME_RATE = 25;
     private static final float DEFAULT_BPP = 0.25f;
-    private static final int DEFAULT_IFRAME_INTERVALS = 3;
+    private static final int DEFAULT_IFRAME_INTERVALS = 2;
     private static final int MAX_BITRATE = 17825792;	// 17Mbps
 
     private int mWidth = DEFAULT_VIDEO_WIDTH;
@@ -101,12 +101,24 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
 	 * setup video encoder. should be called before #prepare
 	 * @param width negative value means using default value(640)
 	 * @param height negative value means using default value(480)
+	 * @param width
+	 * @param height
+	 */
+	public void setFormat(final int width, final int height) {
+		setFormat(width, height, mFrameRate, -1, mIFrameIntervals);
+	}
+
+	/**
+	 * setup video encoder. should be called before #prepare
+	 * @param width negative value means using default value(640)
+	 * @param height negative value means using default value(480)
 	 * @param framerate negative value means using default value(30fps)
 	 * @param bitrate negative value means using default value(calculate from BPP0.25, width,height and framerate)
 	 */
 	public void setFormat(final int width, final int height, final int framerate, final int bitrate) {
 		setFormat(width, height, framerate, bitrate, mIFrameIntervals);
 	}
+
 	/**
 	 * setup video encoder. should be called before #prepare
 	 * @param width negative value means using default value(640)
@@ -137,7 +149,7 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
 
 	@Override
 	protected MediaFormat internal_prepare() throws IOException {
-		if (DEBUG) Log.i(TAG, "prepare: ");
+		if (DEBUG) Log.i(TAG, "internal_prepare: ");
 
         final MediaCodecInfo videoCodecInfo = selectVideoCodec(MIME_TYPE);
         if (videoCodecInfo == null) {
@@ -153,6 +165,7 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
 
 	@Override
 	protected MediaCodec internal_configure(MediaCodec previous_codec, final MediaFormat format) throws IOException {
+		if (DEBUG) Log.v(TAG, "internal_configure:");
 		format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);	// API >= 18
 		format.setInteger(MediaFormat.KEY_BIT_RATE, mBitRate > 0 ? mBitRate : calcBitRate());
 		format.setInteger(MediaFormat.KEY_FRAME_RATE, mFrameRate);

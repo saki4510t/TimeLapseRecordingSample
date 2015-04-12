@@ -35,7 +35,6 @@ import android.util.Log;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
-import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.GregorianCalendar;
@@ -48,9 +47,8 @@ public class TLMediaMovieBuilder {
 	private static final boolean DEBUG = true;
 	private static final String TAG = "TLMediaMovieBuilder";
 
-	private static final int MAX_BUF_SIZE = 1024 * 1024;
 	private static final long MSEC30US = 1000000 / 30;
-	private static String DIR_NAME = "Serenegiant";
+	private static String DIR_NAME = "TimeLapseRecordingSample";
 
 	private final File mBaseDir;
 	private String mOutputPath;
@@ -112,9 +110,7 @@ public class TLMediaMovieBuilder {
 	 */
 	public synchronized void build(final TLMediaMovieBuilderCallback callback) {
 		if (DEBUG) Log.v(TAG, "build:");
-		if (mMuxerTask != null) {
-			mMuxerTask.cancel();
-		}
+		cancel();
 		mMuxerTask = new MuxerTask(this, callback);
 		mMuxerTask.start();
 	}
@@ -192,7 +188,7 @@ public class TLMediaMovieBuilder {
 				try {
 					int videoTrack = -1;
 					int audioTrack = -1;
-					DataInputStream videoIn = TLMediaEncoder.openInputStream(mMovieDir, TLMediaEncoder.TYPE_VIDEO, 0); // changeInput(null, 0, ++videoSequence);
+					final DataInputStream videoIn = TLMediaEncoder.openInputStream(mMovieDir, TLMediaEncoder.TYPE_VIDEO, 0);
 					if (videoIn != null) {
 						final MediaFormat format = TLMediaEncoder.readFormat(videoIn);
 						if (format != null) {
@@ -200,7 +196,7 @@ public class TLMediaMovieBuilder {
 							if (DEBUG) Log.v(TAG, "found video data:format=" + format + "track=" + videoTrack);
 						}
 					}
-					DataInputStream audioIn = TLMediaEncoder.openInputStream(mMovieDir, TLMediaEncoder.TYPE_AUDIO, 0); // changeInput(null, 1, ++audioSequence);
+					final DataInputStream audioIn = TLMediaEncoder.openInputStream(mMovieDir, TLMediaEncoder.TYPE_AUDIO, 0);
 					if (audioIn != null) {
 						final MediaFormat format = TLMediaEncoder.readFormat(audioIn);
 						if (format != null) {
@@ -214,7 +210,6 @@ public class TLMediaMovieBuilder {
 						MediaCodec.BufferInfo videoBufInfo = null;
 						TLMediaEncoder.TLMediaFrameHeader videoFrameHeader = null;
 						if (videoTrack >= 0) {
-							videoBuf = ByteBuffer.allocateDirect(64 * 1024);
 							videoBufInfo = new MediaCodec.BufferInfo();
 							videoFrameHeader = new TLMediaEncoder.TLMediaFrameHeader();
 						}
@@ -222,11 +217,10 @@ public class TLMediaMovieBuilder {
 						MediaCodec.BufferInfo audioBufInfo = new MediaCodec.BufferInfo();
 						TLMediaEncoder.TLMediaFrameHeader audioFrameHeader = null;
 						if (audioTrack >= 0) {
-							audioBuf = ByteBuffer.allocateDirect(64 * 1024);
 							audioBufInfo = new MediaCodec.BufferInfo();
 							audioFrameHeader = new TLMediaEncoder.TLMediaFrameHeader();
 						}
-						byte[] readBuf = new byte[64 * 1024];
+						final byte[] readBuf = new byte[64 * 1024];
 						isMuxerStarted = true;
 						int videoSequence = 0;
 						int audioSequence = 0;
@@ -235,49 +229,40 @@ public class TLMediaMovieBuilder {
 						muxer.start();
 						for (; mIsRunning && ((videoTrack >= 0) || (audioTrack >= 0)); ) {
 							if (videoTrack >= 0) {
-								if (videoIn != null) {
-									try {
-										TLMediaEncoder.readStream(videoIn, videoFrameHeader, videoBuf, readBuf);
-										videoFrameHeader.asBufferInfo(videoBufInfo);
-										if (videoSequence !=  videoFrameHeader.sequence) {
-											videoSequence = videoFrameHeader.sequence;
-											videoTimeOffset = videoPresentationTimeUs - videoBufInfo.presentationTimeUs + MSEC30US;
-										}
-										videoBufInfo.presentationTimeUs += videoTimeOffset;
-										muxer.writeSampleData(videoTrack, videoBuf, videoBufInfo);
-										videoPresentationTimeUs = videoBufInfo.presentationTimeUs;
-									} catch (BufferOverflowException e) {
-										if ((videoBufInfo.size > 0) && (videoBufInfo.size < MAX_BUF_SIZE) && (videoBuf.capacity() < videoBufInfo.size))
-											videoBuf = ByteBuffer.allocateDirect(videoBufInfo.size);
-									} catch (IllegalArgumentException e) {
-										if (DEBUG) Log.d(TAG, String.format("MuxerTask:size=%d,presentationTimeUs=%d,",
-											videoBufInfo.size, videoBufInfo.presentationTimeUs) + videoFrameHeader, e);
-									} catch (IOException e) {
-										videoTrack = -1;	// end
+								try {
+									videoBuf = TLMediaEncoder.readStream(videoIn, videoFrameHeader, videoBuf, readBuf);
+									videoFrameHeader.asBufferInfo(videoBufInfo);
+									if (videoSequence !=  videoFrameHeader.sequence) {
+										videoSequence = videoFrameHeader.sequence;
+										videoTimeOffset = videoPresentationTimeUs - videoBufInfo.presentationTimeUs + MSEC30US;
 									}
-								} else {
+									videoBufInfo.presentationTimeUs += videoTimeOffset;
+									muxer.writeSampleData(videoTrack, videoBuf, videoBufInfo);
+									videoPresentationTimeUs = videoBufInfo.presentationTimeUs;
+								} catch (IllegalArgumentException e) {
+									if (DEBUG) Log.d(TAG, String.format("MuxerTask(video):size=%d,presentationTimeUs=%d,",
+										videoBufInfo.size, videoBufInfo.presentationTimeUs) + videoFrameHeader, e);
+									videoTrack = -1;	// end
+								} catch (IOException e) {
 									videoTrack = -1;	// end
 								}
 							}
 							if (audioTrack >= 0) {
-								if (audioIn != null) {
-									try {
-										TLMediaEncoder.readStream(audioIn, audioFrameHeader, audioBuf, readBuf);
-										audioFrameHeader.asBufferInfo(audioBufInfo);
-										if (audioSequence !=  audioFrameHeader.sequence) {
-											audioSequence = audioFrameHeader.sequence;
-											audioTimeOffset = audioPresentationTimeUs - audioBufInfo.presentationTimeUs + MSEC30US;
-										}
-										audioBufInfo.presentationTimeUs += audioTimeOffset;
-										muxer.writeSampleData(audioTrack, audioBuf, audioBufInfo);
-										audioPresentationTimeUs = audioBufInfo.presentationTimeUs;
-									} catch (BufferOverflowException e) {
-										if ((audioBufInfo.size > 0) && (audioBufInfo.size < MAX_BUF_SIZE) && (audioBuf.capacity() < audioBufInfo.size))
-											audioBuf = ByteBuffer.allocateDirect(audioBufInfo.size);
-									} catch (IOException e) {
-										audioTrack = -1;	// end
+								try {
+									audioBuf = TLMediaEncoder.readStream(audioIn, audioFrameHeader, audioBuf, readBuf);
+									audioFrameHeader.asBufferInfo(audioBufInfo);
+									if (audioSequence !=  audioFrameHeader.sequence) {
+										audioSequence = audioFrameHeader.sequence;
+										audioTimeOffset = audioPresentationTimeUs - audioBufInfo.presentationTimeUs + MSEC30US;
 									}
-								} else {
+									audioBufInfo.presentationTimeUs += audioTimeOffset;
+									muxer.writeSampleData(audioTrack, audioBuf, audioBufInfo);
+									audioPresentationTimeUs = audioBufInfo.presentationTimeUs;
+								} catch (IllegalArgumentException e) {
+									if (DEBUG) Log.d(TAG, String.format("MuxerTask(audio):size=%d,presentationTimeUs=%d,",
+										audioBufInfo.size, audioBufInfo.presentationTimeUs) + audioFrameHeader, e);
+									audioTrack = -1;	// end
+								} catch (IOException e) {
 									audioTrack = -1;	// end
 								}
 							}
@@ -312,6 +297,5 @@ public class TLMediaMovieBuilder {
 				}
 			}
 		}
-
 	}
 }

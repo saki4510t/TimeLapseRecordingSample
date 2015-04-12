@@ -52,7 +52,7 @@ import java.util.concurrent.LinkedBlockingDeque;
  * using MediaCodec encoder so that pause / resume feature is available.
  */
 public abstract class TLMediaEncoder {
-	private static final boolean DEBUG = true;
+	private static final boolean DEBUG = false;
 	private static final String TAG_STATIC = "TLMediaEncoder";
 	private final String TAG = getClass().getSimpleName();
 
@@ -116,7 +116,7 @@ public abstract class TLMediaEncoder {
 	private final File mBaseDir;
 	private final int mType;
 	private Exception mCurrentException;
-	private volatile int mState = STATE_RELEASE;
+	private int mState = STATE_RELEASE;
 	private DataOutputStream mCurrentOutputStream;
 	private int mSequence;
 	private int mNumFrames = -1;
@@ -140,6 +140,7 @@ public abstract class TLMediaEncoder {
 			try {
 				mSync.wait();
 			} catch (InterruptedException e) {
+				// ignore
 			}
 		}
 	}
@@ -150,8 +151,10 @@ public abstract class TLMediaEncoder {
 	 */
 	public final void prepare() throws Exception {
 		if (DEBUG) Log.v(TAG, "prepare");
-		if (!mIsRunning || (mState != STATE_INITIALIZED))
-			throw new IllegalStateException("not ready/already released:" + mState);
+		synchronized (mSync) {
+			if (!mIsRunning || (mState != STATE_INITIALIZED))
+				throw new IllegalStateException("not ready/already released:" + mState);
+		}
 		setRequestAndWait(REQUEST_PREPARE);
 	}
 
@@ -169,20 +172,20 @@ public abstract class TLMediaEncoder {
 	 */
 	public void start(boolean pauseAfterStarted) throws IOException {
 		if (DEBUG) Log.v(TAG, "start");
-		if (!mIsRunning || ((mState != STATE_PREPARING) && (mState != STATE_PREPARED)))
-			throw new IllegalStateException("not prepare/already released:" + mState);
 		synchronized (mSync) {
-			// wait for Handler is ready
-			if (!pauseAfterStarted) {
-				resume(-1);
-			} else {
+			if (!mIsRunning || ((mState != STATE_PREPARING) && (mState != STATE_PREPARED)))
+				throw new IllegalStateException("not prepare/already released:" + mState);
+			if (pauseAfterStarted) {
 				setRequest(REQUEST_PAUSE);
+			} else {
+				resume(-1);
 			}
 		}
 	}
 
 	/**
 	 * request stop encoder
+	 * current implementation is same as release and don't re-use again.
 	 */
 	public void stop() {
 		if (DEBUG) Log.v(TAG, "stop");
@@ -211,11 +214,13 @@ public abstract class TLMediaEncoder {
 	 */
 	public void resume(final int num_frames) throws IOException {
 		if (DEBUG) Log.v(TAG, "resume");
-		if (!mIsRunning
-			|| ( (mState != STATE_PREPARING) && (mState != STATE_PREPARED)
-					&& (mState != STATE_PAUSING) && (mState != STATE_PAUSED) ) )
-			throw new IllegalStateException("not ready to resume:" + mState);
-		mNumFrames = num_frames;
+		synchronized (mSync) {
+			if (!mIsRunning
+					|| ((mState != STATE_PREPARING) && (mState != STATE_PREPARED)
+					&& (mState != STATE_PAUSING) && (mState != STATE_PAUSED)))
+				throw new IllegalStateException("not ready to resume:" + mState);
+			mNumFrames = num_frames;
+		}
 		setRequest(REQUEST_RESUME);
 	}
 
@@ -224,7 +229,6 @@ public abstract class TLMediaEncoder {
 	 */
 	public void pause() throws Exception {
 		if (DEBUG) Log.v(TAG, "pause");
-
 		removeRequest(REQUEST_DRAIN);
 		setRequestFirst(REQUEST_PAUSE);
 	}
@@ -240,35 +244,19 @@ public abstract class TLMediaEncoder {
 	}
 
 	/**
-	 * set sequence number
-	 * @param sequence
-	 */
-/*	public void setSequence(final int sequence) {
-		mSequence = sequence;
-	} */
-
-	/**
-	 * get sequence number
-	 * @return
-	 */
-/*	public int getSequence() {
-		synchronized (mSync) {
-			return mSequence;
-		}
-	} */
-
-	/**
      * calling this method notify encoder that the input data is already available or will be available soon
      * @return return tur if this encoder can accept input data
      */
     public boolean frameAvailableSoon() {
 //    	if (DEBUG) Log.v(TAG, "frameAvailableSoon");
-		if (mState != STATE_RUNNING) {
-			return false;
+		synchronized (mSync) {
+			if (mState != STATE_RUNNING) {
+				return false;
+			}
 		}
 		removeRequest(REQUEST_DRAIN);
 		setRequest(REQUEST_DRAIN);
-        return true;
+		return true;
     }
 
 	public void release() {
@@ -278,7 +266,6 @@ public abstract class TLMediaEncoder {
 
 //********************************************************************************
 //********************************************************************************
-
 	/**
 	 * prepare MediaFormat instance for this encoder.
 	 * If there are previous intermediate files exist in current movie directory,
@@ -299,18 +286,45 @@ public abstract class TLMediaEncoder {
 	protected abstract MediaCodec internal_configure(MediaCodec previous_codec, MediaFormat format) throws IOException;
 
 
+	protected void callOnPrepared() {
+		if (mListener != null) {
+			try {
+				mListener.onPrepared(TLMediaEncoder.this);
+			} catch (Exception e) {
+				Log.e(TAG, "callOnPrepared:", e);
+			}
+		}
+	}
+
 	protected void callOnResume() {
 		if (mListener != null) {
-			mListener.onResume(this);
+			try {
+				mListener.onResume(this);
+			} catch (Exception e) {
+				Log.e(TAG, "callOnResume:", e);
+			}
 		}
 	}
 
 	protected void callOnPause() {
 		if (mListener != null) {
-			mListener.onPause(this);
+			try {
+				mListener.onPause(this);
+			} catch (Exception e) {
+				Log.e(TAG, "callOnPause:", e);
+			}
 		}
 	}
 
+	protected void callOnStopped() {
+		if (mListener != null) {
+			try {
+				mListener.onStopped(this);
+			} catch (Exception e) {
+				Log.e(TAG, "callOnStopped:", e);
+			}
+		}
+	}
 //********************************************************************************
 //********************************************************************************
 	private final void setState(final int state, final Exception e) {
@@ -323,25 +337,19 @@ public abstract class TLMediaEncoder {
 
 	private final void setRequest(final int request) {
 		mRequestQueue.offer(Integer.valueOf(request));
-		synchronized (mSync) {
-			mSync.notifyAll();
-		}
 	}
 
 	private final void setRequestFirst(final int request) {
 		mRequestQueue.offerFirst(Integer.valueOf(request));
-		synchronized (mSync) {
-			mSync.notifyAll();
-		}
 	}
 
 	private final void removeRequest(final int request) {
-		while (mRequestQueue.remove(Integer.valueOf(request))) {};
+		for (; mRequestQueue.remove(Integer.valueOf(request)) ;);
 	}
 
 	private final void setRequestAndWait(final int request) throws Exception {
-		mRequestQueue.offer(Integer.valueOf(request));
 		synchronized (mSync) {
+			mRequestQueue.offer(Integer.valueOf(request));
 			try {
 				mSync.wait();
 				if (mCurrentException != null)
@@ -373,118 +381,49 @@ public abstract class TLMediaEncoder {
 			mIsRunning = true;
 			setState(STATE_INITIALIZED, null);
 			for (; mIsRunning; ) {
-				if (request == REQUEST_NON) {    // 未処理の要求コマンドが無い時
-					request = waitRequest();
+				if (request == REQUEST_NON) {	// if there is no handling request
+					request = waitRequest();	// wait for next request
 				}
 				if (request == REQUEST_STOP) {
 					handlePauseRecording();
 					mIsRunning = false;
 					break;
 				}
-				switch (mState) {
+				if (mState == STATE_RUNNING) {
+					request = handleRunning(request);
+				} else {
+					if (request == REQUEST_DRAIN) {
+						request = REQUEST_NON;	// just clear request
+						removeRequest(REQUEST_DRAIN);
+						continue;
+					}
+					switch (mState) {
 					case STATE_RELEASE:
 						setState(STATE_RELEASE, new IllegalStateException("state=" + mState + ",request=" + request));
 						mIsRunning = false;
 						continue;
 					case STATE_INITIALIZED:
-						if (DEBUG) Log.v(TAG, "STATE_INITIALIZED");
-						if (request == REQUEST_PREPARE) {
-							setState(STATE_PREPARING, null);
-						} else {
-							setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
-							request = REQUEST_NON;
-						}
+						request = handleInitialized(request);
 						break;
 					case STATE_PREPARING:
-						if (DEBUG) Log.v(TAG, "STATE_PREPARING");
-						request = REQUEST_NON;
-						try {
-							checkLastSequence();
-							if (mConfigFormat == null)
-								mConfigFormat = internal_prepare();
-							if (mConfigFormat != null) {
-								setState(STATE_PREPARED, null);
-							} else {
-								setState(STATE_INITIALIZED, new IllegalArgumentException());
-							}
-							if (mListener != null) {
-								try {
-									mListener.onPrepared(TLMediaEncoder.this);
-								} catch (Exception e) {
-									Log.e(TAG, "error occurred in #onPrepared:", e);
-								}
-							}
-						} catch (IOException e) {
-							setState(STATE_INITIALIZED, e);
-						}
+						request = handlePreparing(request);
 						break;
 					case STATE_PREPARED:
-						if (DEBUG) Log.v(TAG, "STATE_PREPARED");
-						switch (request) {
-						case REQUEST_RESUME:
-							setState(STATE_RESUMING, null);
-							break;
-						case REQUEST_PAUSE:
-							setState(STATE_PAUSING, null);
-							break;
-						default:
-							setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
-							request = REQUEST_NON;
-						}
+						request = handlePrepared(request);
 						break;
 					case STATE_PAUSING:
-						if (DEBUG) Log.v(TAG, "STATE_PAUSING");
-						request = REQUEST_NON;
-						handlePauseRecording();
-						setState(STATE_PAUSED, null);
-						callOnPause();
+						request = handlePausing(request);
 						break;
 					case STATE_PAUSED:
-						if (DEBUG) Log.v(TAG, "STATE_PAUSED");
-						switch (request) {
-						case REQUEST_RESUME:
-							setState(STATE_RESUMING, null);
-							break;
-						default:
-							setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
-							request = REQUEST_NON;
-						}
+						request = handlePaused(request);
 						break;
 					case STATE_RESUMING:
-						if (DEBUG) Log.v(TAG, "STATE_RESUMING");
-						request = REQUEST_NON;
-						try {
-							mIsEOS = false;
-							mMediaCodec = internal_configure(mMediaCodec, mConfigFormat);
-							mCurrentOutputStream = openOutputStream(); // changeOutputStream();
-							mMediaCodec.start();
-							encoderOutputBuffers = mMediaCodec.getOutputBuffers();
-							encoderInputBuffers = mMediaCodec.getInputBuffers();
-							mFrameCounts = -1;
-							setState(STATE_RUNNING, null);
-							callOnResume();
-						} catch (IOException e) {
-							setState(STATE_INITIALIZED, e);
-							break;
-						}
+						request = handleResuming(request);
 						break;
-					case STATE_RUNNING:
-						if (DEBUG) Log.v(TAG, "STATE_RUNNING");
-						switch (request) {
-						case REQUEST_PAUSE:
-							setState(STATE_PAUSING, null);
-							break;
-						case REQUEST_DRAIN:
-							request = REQUEST_NON;
-							drain();
-							break;
-						default:
-							setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
-							request = REQUEST_NON;
-						}
-						break;
-				} // end of switch
-			} // end of for
+					default:
+					} // end of switch (mState)
+				}
+			} // end of for mIsRunning
 			if (DEBUG) Log.v(TAG, "#run:finished");
 			setState(STATE_RELEASE, null);
 			// internal_release all related objects
@@ -492,6 +431,120 @@ public abstract class TLMediaEncoder {
 		}
 	};
 
+	private final int handleRunning(int request) {
+		if (DEBUG) Log.v(TAG, "STATE_RUNNING");
+		switch (request) {
+		case REQUEST_RESUME:
+			request = REQUEST_NON;	// just clear request
+			break;
+		case REQUEST_PAUSE:
+			setState(STATE_PAUSING, null);
+			break;
+		case REQUEST_DRAIN:
+			request = REQUEST_NON;
+			drain();
+			break;
+		default:
+			setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
+			request = REQUEST_NON;
+		}
+		return request;
+	}
+
+	private final int handleInitialized(int request) {
+		if (DEBUG) Log.v(TAG, "STATE_INITIALIZED");
+		switch (request) {
+		case REQUEST_PREPARE:
+			setState(STATE_PREPARING, null);
+			break;
+		default:
+			setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
+			request = REQUEST_NON;
+		}
+		return request;
+	}
+
+	private final int handlePreparing(int request) {
+		if (DEBUG) Log.v(TAG, "STATE_PREPARING");
+		request = REQUEST_NON;
+		try {
+			checkLastSequence();
+			if (mConfigFormat == null)
+				mConfigFormat = internal_prepare();
+			if (mConfigFormat != null) {
+				setState(STATE_PREPARED, null);
+			} else {
+				setState(STATE_INITIALIZED, new IllegalArgumentException());
+			}
+			callOnPrepared();
+		} catch (IOException e) {
+			setState(STATE_INITIALIZED, e);
+		}
+		return request;
+	}
+
+	private final int handlePrepared(int request) {
+		if (DEBUG) Log.v(TAG, "STATE_PREPARED");
+		switch (request) {
+		case REQUEST_PREPARE:
+			request = REQUEST_NON;	// just clear request
+			break;
+		case REQUEST_RESUME:
+			setState(STATE_RESUMING, null);
+			break;
+		case REQUEST_PAUSE:
+			setState(STATE_PAUSING, null);
+			break;
+		default:
+			setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
+			request = REQUEST_NON;
+		}
+		return request;
+	}
+
+	private final int handlePausing(int request) {
+		if (DEBUG) Log.v(TAG, "STATE_PAUSING");
+		request = REQUEST_NON;
+		handlePauseRecording();
+		setState(STATE_PAUSED, null);
+		callOnPause();
+		return request;
+	}
+
+	private final int handlePaused(int request) {
+		if (DEBUG) Log.v(TAG, "STATE_PAUSED");
+		switch (request) {
+		case REQUEST_RESUME:
+			setState(STATE_RESUMING, null);
+			break;
+		case REQUEST_PAUSE:
+			request = REQUEST_NON;	// just clear request
+			break;
+		default:
+			setState(STATE_INITIALIZED, new IllegalStateException("state=" + mState + ",request=" + request));
+			request = REQUEST_NON;
+		}
+		return request;
+	}
+
+	private final int handleResuming(int request) {
+		if (DEBUG) Log.v(TAG, "STATE_RESUMING");
+		request = REQUEST_NON;
+		try {
+			mIsEOS = false;
+			mMediaCodec = internal_configure(mMediaCodec, mConfigFormat);
+			mCurrentOutputStream = openOutputStream(); // changeOutputStream();
+			mMediaCodec.start();
+			encoderOutputBuffers = mMediaCodec.getOutputBuffers();
+			encoderInputBuffers = mMediaCodec.getInputBuffers();
+			mFrameCounts = -1;
+			setState(STATE_RUNNING, null);
+			callOnResume();
+		} catch (IOException e) {
+			setState(STATE_INITIALIZED, e);
+		}
+		return request;
+	}
 //********************************************************************************
 //********************************************************************************
 	/**
@@ -502,7 +555,7 @@ public abstract class TLMediaEncoder {
 		if (DEBUG) Log.v(TAG, "handlePauseRecording");
 		// process all available output data
 		drain();
-		// request stop recording
+		// send EOS to MediaCodec encoder(request to stop)
 		signalEndOfInputStream();
 		// process output data again for EOS signal
 		drain();
@@ -517,9 +570,13 @@ public abstract class TLMediaEncoder {
 		encoderOutputBuffers = encoderInputBuffers = null;
 		mRequestQueue.clear();
 		if (mMediaCodec != null) {
-			mMediaCodec.stop();
-			mMediaCodec.release();
-			mMediaCodec = null;
+			try {
+				mMediaCodec.stop();
+				mMediaCodec.release();
+				mMediaCodec = null;
+			} catch (Exception e) {
+				Log.e(TAG, "failed releasing MediaCodec", e);
+			}
 		}
 	}
 
@@ -528,11 +585,7 @@ public abstract class TLMediaEncoder {
      */
     protected void internal_release() {
 		if (DEBUG) Log.d(TAG, "internal_release:");
-		try {
-			mListener.onStopped(this);
-		} catch (Exception e) {
-			Log.e(TAG, "failed onStopped", e);
-		}
+		callOnStopped();
 		mIsRunning = false;
         if (mMediaCodec != null) {
 			try {
@@ -565,31 +618,28 @@ public abstract class TLMediaEncoder {
      * @param length　length of byte array, zero means EOS.
      * @param presentationTimeUs
      */
-    protected void encode(final byte[] buffer, final int length, final long presentationTimeUs) {
+//	protected void encode(final byte[] buffer, final int length, final long presentationTimeUs) {
+	protected void encode(final ByteBuffer buffer, int length, long presentationTimeUs) {
     	if (!mIsRunning || !isRecording()) return;
-    	int ix = 0, sz;
-        while (mIsRunning && ix < length) {
+        while (mIsRunning) {
 	        final int inputBufferIndex = mMediaCodec.dequeueInputBuffer(TIMEOUT_USEC);
 	        if (inputBufferIndex >= 0) {
 	            final ByteBuffer inputBuffer = encoderInputBuffers[inputBufferIndex];
 	            inputBuffer.clear();
-	            sz = inputBuffer.remaining();
-	            sz = (ix + sz < length) ? sz : length - ix; 
-	            if (sz > 0 && (buffer != null)) {
-	            	inputBuffer.put(buffer, ix, sz);
-	            }
-	            ix += sz;
-	            if (length <= 0) {
-	            	// send EOS
-	            	mIsEOS = true;
-	            	if (DEBUG) Log.i(TAG, "send BUFFER_FLAG_END_OF_STREAM");
-	            	mMediaCodec.queueInputBuffer(inputBufferIndex, 0, 0,
-	            		presentationTimeUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-		            break;
-	            } else {
-	            	mMediaCodec.queueInputBuffer(inputBufferIndex, 0, sz,
-	            		presentationTimeUs, 0);
-	            }
+				if (buffer != null) {
+					inputBuffer.put(buffer);
+				}
+				if (length <= 0) {
+					// send EOS
+					mIsEOS = true;
+					if (DEBUG) Log.i(TAG, "send BUFFER_FLAG_END_OF_STREAM");
+					mMediaCodec.queueInputBuffer(inputBufferIndex, 0, 0,
+							presentationTimeUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+				} else {
+					mMediaCodec.queueInputBuffer(inputBufferIndex, 0, length,
+							presentationTimeUs, 0);
+				}
+				break;
 	        } else if (inputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
 	        	// wait for MediaCodec encoder is ready to encode
 	        	// nothing to do here because MediaCodec#dequeueInputBuffer(TIMEOUT_USEC)
@@ -608,7 +658,7 @@ public abstract class TLMediaEncoder {
     protected void drain() {
     	if (mMediaCodec == null) return;
         int encoderStatus;
-LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
+		while (mIsRunning && (mState == STATE_RUNNING)) {
 			// get encoded data with maximum timeout duration of TIMEOUT_USEC(=10[msec])
 			try {
 				encoderStatus = mMediaCodec.dequeueOutputBuffer(mBufferInfo, TIMEOUT_USEC);
@@ -618,7 +668,7 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
             if (encoderStatus == MediaCodec.INFO_TRY_AGAIN_LATER) {
                 // wait 5 counts(=TIMEOUT_USEC x 5 = 50msec) until data/EOS come
                 if (!mIsEOS) {
-               		break LOOP;		// out of while
+               		break;		// out of while
                 }
             } else if (encoderStatus == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
             	if (DEBUG) Log.v(TAG, "INFO_OUTPUT_BUFFERS_CHANGED");
@@ -723,8 +773,8 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 				configFormat = asMediaFormat(in.readUTF());	// for MediaCodec
 				in.readUTF();	// for MediaMuxer
 				// search last sequence
-				// XXX this is not a effective implementation for large intermediate file.
-				// it may be better to split into multiple files for each sequence
+				// this is not a effective implementation for large intermediate file.
+				// ex. it may be better to split into multiple files for each sequence
 				// or split into two files; file for control block and file for raw bit stream.
 				final TLMediaFrameHeader header = new TLMediaFrameHeader();
 				for (; mIsRunning ;) {
@@ -736,6 +786,7 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 				in.close();
 			}
 		} catch (Exception e) {
+			// ignore
 		}
 		mSequence = sequence;
 		mConfigFormat = configFormat;
@@ -773,7 +824,8 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 	}
 
 	private static String getSequenceFilePath(final File base_dir, final int type, final long sequence) {
-		final File file = new File(base_dir, String.format("%s-%d.raw", (type == 1 ? "audio" : "video"), sequence));
+//		final File file = new File(base_dir, String.format("%s-%d.raw", (type == 1 ? "audio" : "video"), sequence));
+		final File file = new File(base_dir, String.format("%s-0.raw", (type == 1 ? "audio" : "video")));
 		return file.getAbsolutePath();
 	}
 
@@ -792,7 +844,7 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 				throw e;
 			}
 		mSequence++;
-		final String path = getSequenceFilePath(mBaseDir, mType, 0);
+		final String path = getSequenceFilePath(mBaseDir, mType, mSequence);
 		return new DataOutputStream(new BufferedOutputStream(new FileOutputStream(path, mSequence > 0)));
 	}
 
@@ -867,6 +919,8 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 				map.put(MediaFormat.KEY_FRAME_RATE, format.getInteger(MediaFormat.KEY_FRAME_RATE));
 			if (format.containsKey(MediaFormat.KEY_I_FRAME_INTERVAL))
 				map.put(MediaFormat.KEY_I_FRAME_INTERVAL, format.getInteger(MediaFormat.KEY_I_FRAME_INTERVAL));
+			if (format.containsKey(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER))
+				map.put(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, format.getLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER));
 			if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE))
 				map.put(MediaFormat.KEY_MAX_INPUT_SIZE, format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
 			if (format.containsKey(MediaFormat.KEY_DURATION))
@@ -879,8 +933,12 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 				map.put(MediaFormat.KEY_CHANNEL_MASK, format.getInteger(MediaFormat.KEY_CHANNEL_MASK));
 			if (format.containsKey(MediaFormat.KEY_AAC_PROFILE))
 				map.put(MediaFormat.KEY_AAC_PROFILE, format.getInteger(MediaFormat.KEY_AAC_PROFILE));
+			if (format.containsKey(MediaFormat.KEY_AAC_SBR_MODE))
+				map.put(MediaFormat.KEY_AAC_SBR_MODE, format.getInteger(MediaFormat.KEY_AAC_SBR_MODE));
 			if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE))
 				map.put(MediaFormat.KEY_MAX_INPUT_SIZE, format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE));
+			if (format.containsKey(MediaFormat.KEY_IS_ADTS))
+				map.put(MediaFormat.KEY_IS_ADTS, format.getInteger(MediaFormat.KEY_IS_ADTS));
 			if (format.containsKey("what"))
 				map.put("what", format.getInteger("what"));
 			if (format.containsKey("csd-0"))
@@ -895,7 +953,7 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 	}
 
 	private static final MediaFormat asMediaFormat(final String format_str) {
-		final MediaFormat format = new MediaFormat();
+		MediaFormat format = new MediaFormat();
 		try {
 			final JSONObject map = new JSONObject(format_str);
 			if (map.has(MediaFormat.KEY_MIME))
@@ -912,6 +970,8 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 				format.setInteger(MediaFormat.KEY_FRAME_RATE, (Integer)map.get(MediaFormat.KEY_FRAME_RATE));
 			if (map.has(MediaFormat.KEY_I_FRAME_INTERVAL))
 				format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, (Integer)map.get(MediaFormat.KEY_I_FRAME_INTERVAL));
+			if (map.has(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER))
+				format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, (Long)map.get(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER));
 			if (map.has(MediaFormat.KEY_MAX_INPUT_SIZE))
 				format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, (Integer)map.get(MediaFormat.KEY_MAX_INPUT_SIZE));
 			if (map.has(MediaFormat.KEY_DURATION))
@@ -924,8 +984,12 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 				format.setInteger(MediaFormat.KEY_CHANNEL_MASK, (Integer) map.get(MediaFormat.KEY_CHANNEL_MASK));
 			if (map.has(MediaFormat.KEY_AAC_PROFILE))
 				format.setInteger(MediaFormat.KEY_AAC_PROFILE, (Integer) map.get(MediaFormat.KEY_AAC_PROFILE));
+			if (map.has(MediaFormat.KEY_AAC_SBR_MODE))
+				format.setInteger(MediaFormat.KEY_AAC_SBR_MODE, (Integer) map.get(MediaFormat.KEY_AAC_SBR_MODE));
 			if (map.has(MediaFormat.KEY_MAX_INPUT_SIZE))
 				format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, (Integer) map.get(MediaFormat.KEY_MAX_INPUT_SIZE));
+			if (map.has(MediaFormat.KEY_IS_ADTS))
+				format.setInteger(MediaFormat.KEY_IS_ADTS, (Integer) map.get(MediaFormat.KEY_IS_ADTS));
 			if (map.has("what"))
 				format.setInteger("what", (Integer)map.get("what"));
 			if (map.has("csd-0"))
@@ -933,7 +997,8 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 			if (map.has("csd-1"))
 				format.setByteBuffer("csd-1", asByteBuffer((String)map.get("csd-1")));
 		} catch (JSONException e) {
-			Log.e(TAG_STATIC, "writeFormat:", e);
+			Log.e(TAG_STATIC, "writeFormat:" + format_str, e);
+			format = null;
 		}
 		return format;
 	}
@@ -1057,24 +1122,24 @@ LOOP:	while (mIsRunning && (mState == STATE_RUNNING)) {
 	 * @throws IOException
 	 * @throws BufferOverflowException
 	 */
-	/*package*/static void readStream(final DataInputStream in,
+	/*package*/static ByteBuffer readStream(final DataInputStream in,
 		final TLMediaFrameHeader header,
-		final ByteBuffer buffer, final byte[] readBuffer) throws IOException, BufferOverflowException {
+		ByteBuffer buffer, final byte[] readBuffer) throws IOException {
 
 		readHeader(in, header);
-		buffer.clear();
-		if (header.size > buffer.capacity()) {
-			in.skipBytes(header.size);	// skip this frame
-			throw new BufferOverflowException();
+		if ((buffer == null) || header.size > buffer.capacity()) {
+			buffer = ByteBuffer.allocateDirect(header.size);
 		}
+		buffer.clear();
 		final int max_bytes = Math.min(readBuffer.length, header.size);
-		int read_bytes = 0;
+		int read_bytes;
 		for (int i = header.size; i > 0; i -= read_bytes) {
 			read_bytes = in.read(readBuffer, 0, Math.min(i, max_bytes));
 			if (read_bytes <= 0) break;
 			buffer.put(readBuffer, 0, read_bytes);
 		}
 		buffer.flip();
+		return buffer;
 	}
 
 	/**

@@ -38,7 +38,7 @@ import java.io.IOException;
  * Encoder class to encode audio data with AAC encoder and save into intermediate files
  */
 public abstract class AbstractTLMediaAudioEncoder extends TLMediaEncoder {
-	private static final boolean DEBUG = true;
+	private static final boolean DEBUG = false;
 	private final String TAG = getClass().getSimpleName();
 
 	private static final String MIME_TYPE = "audio/mp4a-latm";
@@ -147,7 +147,7 @@ public abstract class AbstractTLMediaAudioEncoder extends TLMediaEncoder {
         final int numCodecs = MediaCodecList.getCodecCount();
 LOOP:	for (int i = 0; i < numCodecs; i++) {
         	final MediaCodecInfo codecInfo = MediaCodecList.getCodecInfoAt(i);
-            if (!codecInfo.isEncoder()) {	// skipp decoder
+            if (!codecInfo.isEncoder()) {	// skip decoder
                 continue;
             }
             final String[] types = codecInfo.getSupportedTypes();

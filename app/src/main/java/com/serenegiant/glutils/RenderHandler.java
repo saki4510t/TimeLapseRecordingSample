@@ -35,7 +35,7 @@ import android.view.SurfaceHolder;
  * Helper class to draw texture to whole view on private thread
  */
 public final class RenderHandler implements Runnable {
-	private static final boolean DEBUG = true;	// TODO set false on internal_release
+	private static final boolean DEBUG = false;	// TODO set false on releasing
 	private static final String TAG = "RenderHandler";
 
 	private final Object mSync = new Object();
@@ -100,18 +100,12 @@ public final class RenderHandler implements Runnable {
 			mTexMatrix = tex_matrix;
 			mRequestDraw++;
 			mSync.notifyAll();
-			try {
-				mSync.wait();
-			} catch (InterruptedException e) {
-			}
 		}
 	}
 
 	public boolean isValid() {
 		synchronized (mSync) {
-			return mSurface != null
-				? (mSurface instanceof Surface ? ((Surface)mSurface).isValid() : true)
-				: false;
+			return !(mSurface instanceof Surface) || ((Surface)mSurface).isValid();
 		}
 	}
 
@@ -124,6 +118,7 @@ public final class RenderHandler implements Runnable {
 			try {
 				mSync.wait();
 			} catch (InterruptedException e) {
+				// ignore
 			}
 		}
 	}
@@ -142,9 +137,8 @@ public final class RenderHandler implements Runnable {
 			mRequestDraw = 0;
 			mSync.notifyAll();
 		}
-        boolean isRunning = true;
         boolean localRequestDraw;
-        while (isRunning) {
+        for (;;) {
         	synchronized (mSync) {
         		if (mRequestRelease) break;
 	        	if (mRequestSetEglContext) {
@@ -152,17 +146,16 @@ public final class RenderHandler implements Runnable {
 	        		internalPrepare();
 	        	}
 	        	localRequestDraw = mRequestDraw > 0;
-	        	if (localRequestDraw)
-	        		mRequestDraw--;
+	        	if (localRequestDraw) {
+					mRequestDraw--;
+//					mSync.notifyAll();
+				}
         	}
         	if (localRequestDraw) {
         		if ((mEgl != null) && mTexId >= 0) {
             		mInputSurface.makeCurrent();
             		mDrawer.draw(mTexId, mTexMatrix);
             		mInputSurface.swap();
-        		}
-        		synchronized (mSync) {
-        			mSync.notifyAll();
         		}
         	} else {
         		synchronized(mSync) {
@@ -175,7 +168,6 @@ public final class RenderHandler implements Runnable {
         	}
         }
         synchronized (mSync) {
-        	isRunning = false;
         	mRequestRelease = true;
             internalRelease();
             mSync.notifyAll();
@@ -188,12 +180,7 @@ public final class RenderHandler implements Runnable {
 		internalRelease();
 		mEgl = new EGLBase(mShard_context, false, mIsRecordable);
 
-		if (mSurface instanceof Surface)
-    		mInputSurface = mEgl.createFromSurface(mSurface);
-		else if (mSurface instanceof SurfaceTexture)
-    		mInputSurface = mEgl.createFromSurface(mSurface);
-		else
-			throw new IllegalArgumentException("Invalid surface object:" + mSurface);
+		mInputSurface = mEgl.createFromSurface(mSurface);
 
 		mInputSurface.makeCurrent();
 		mDrawer = new GLDrawer2D();

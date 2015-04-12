@@ -24,20 +24,20 @@ package com.serenegiant.glutils;
  * All files in the folder are under this Apache License, Version 2.0.
 */
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.FloatBuffer;
-
 import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
 import android.opengl.Matrix;
 import android.util.Log;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
+
 /**
  * Helper class to draw to whole view using specific texture and texture matrix
  */
 public class GLDrawer2D {
-	private static final boolean DEBUG = false; // TODO set false on internal_release
+	private static final boolean DEBUG = false; // TODO set false on releasing
 	private static final String TAG = "GLDrawer2D";
 
 	private static final String vss
@@ -105,7 +105,7 @@ public class GLDrawer2D {
 	}
 
 	/**
-	 * terminatinng, this should be called in GL context
+	 * terminating, this should be called in GL context
 	 */
 	public void release() {
 		if (hProgram >= 0)
@@ -122,13 +122,25 @@ public class GLDrawer2D {
 		GLES20.glUseProgram(hProgram);
 		if (tex_matrix != null)
 			GLES20.glUniformMatrix4fv(muTexMatrixLoc, 1, false, tex_matrix, 0);
+		GLES20.glUniformMatrix4fv(muMVPMatrixLoc, 1, false, mMvpMatrix, 0);
 		GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
 		GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex_id);
 		GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, VERTEX_NUM);
 		GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0);
         GLES20.glUseProgram(0);
 	}
-	
+
+	/**
+	 * Set model/view/projection transform matrix
+	 * @param matrix
+	 * @param offset
+	 */
+	public void setMatrix(final float[] matrix, final int offset) {
+		if ((matrix != null) && (matrix.length >= offset + 16)) {
+			System.arraycopy(matrix, offset, mMvpMatrix, 0, 16);
+		}
+	}
+
 	/**
 	 * create external texture
 	 * @return texture ID
