@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+	<string name="app_name">TimeLapseRecordingSample</string>
+	<string name="recording_hint">録画ボタン以外の画面にタッチしている間だけ録画します</string>
+	<string name="action_settings">設定</string>
+</resources>

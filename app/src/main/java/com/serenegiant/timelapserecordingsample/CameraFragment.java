@@ -26,6 +26,7 @@ package com.serenegiant.timelapserecordingsample;
 
 import android.app.Activity;
 import android.app.Fragment;
+import android.content.pm.ActivityInfo;
 import android.media.MediaScannerConnection;
 import android.os.Bundle;
 import android.text.TextUtils;
@@ -36,6 +37,7 @@ import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.ViewGroup;
 import android.widget.ImageButton;
+import android.widget.Toast;
 
 import com.serenegiant.media.TLMediaAudioEncoder;
 import com.serenegiant.media.TLMediaEncoder;
@@ -90,6 +92,14 @@ public class CameraFragment extends Fragment {
 		stopRecording();
 		mCameraView.onPause();
 		super.onPause();
+	}
+
+	/*
+	 *
+	 */
+	public final void fixedScreenOrientation(final boolean fixed) {
+		getActivity().setRequestedOrientation(
+			fixed ? ActivityInfo.SCREEN_ORIENTATION_LOCKED : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
 	}
 
 	/**
@@ -175,10 +185,12 @@ public class CameraFragment extends Fragment {
 				mAudioEncoder.start(true);
 			}
 			mIsRecording = true;
+			Toast.makeText(getActivity(), R.string.recording_hint, Toast.LENGTH_SHORT).show();
 		} catch (Exception e) {
 			mRecordButton.setColorFilter(0);
 			Log.e(TAG, "startCapture:", e);
 		}
+		fixedScreenOrientation(mIsRecording);
 	}
 
 	/**
@@ -197,6 +209,7 @@ public class CameraFragment extends Fragment {
 			mAudioEncoder.stop();
 			mAudioEncoder.release();
 		}
+		fixedScreenOrientation(mIsRecording);
 		try {
 			mMuxer = new TLMediaMovieBuilder(getActivity(), mMovieName);
 			mMuxer.build(mTLMediaMovieBuilderCallback);

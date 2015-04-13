@@ -44,7 +44,7 @@ import java.util.Locale;
  * Builder class to build actual mp4 file from intermediate files made by TLMediaEncoder and it's inheritor
  */
 public class TLMediaMovieBuilder {
-	private static final boolean DEBUG = true;
+	private static final boolean DEBUG = false;
 	private static final String TAG = "TLMediaMovieBuilder";
 
 	private static final long MSEC30US = 1000000 / 30;
