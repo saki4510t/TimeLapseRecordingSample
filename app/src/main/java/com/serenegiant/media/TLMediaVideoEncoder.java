@@ -67,7 +67,9 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
 	 * @param base_path
 	 * @param listener
 	 */
-	public TLMediaVideoEncoder(final Context context, final String base_path, final MediaEncoderListener listener) {
+	public TLMediaVideoEncoder(final Context context,
+		final String base_path, final MediaEncoderListener listener) {
+
 		super(context, base_path, 0, listener);
 		if (DEBUG) Log.i(TAG, "TLMediaVideoEncoder: ");
 		mRenderHandler = RenderHandler.createHandler(TAG);
@@ -127,8 +129,11 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
 	 * @param bitrate negative value means using default value(calculate from BPP0.25, width,height and framerate)
 	 * @param iframe_intervals negative value means using default value(10)
 	 */
-	public void setFormat(final int width, final int height, final int framerate, final int bitrate, final int iframe_intervals) {
-		if (DEBUG) Log.v(TAG, String.format("requested setFormat:size(%d,%d),fps=%d,bps=%d,iframe=%d", width, height, framerate, bitrate, iframe_intervals));
+	public void setFormat(final int width, final int height,
+		final int framerate, final int bitrate, final int iframe_intervals) {
+
+		if (DEBUG) Log.v(TAG, String.format("requested setFormat:size(%d,%d),fps=%d,bps=%d,iframe=%d",
+			width, height, framerate, bitrate, iframe_intervals));
 		if (mSurface != null)
 			throw new IllegalStateException("already prepared");
 		if (width > 0) mWidth = width;
@@ -144,7 +149,8 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
 
 		if (iframe_intervals > 0) mIFrameIntervals = iframe_intervals;
 		else mIFrameIntervals = DEFAULT_IFRAME_INTERVALS;
-		if (DEBUG) Log.v(TAG, String.format("setFormat:size(%d,%d),fps=%d,bps=%d,iframe=%d", mWidth, mHeight, mFrameRate, mBitRate, mIFrameIntervals));
+		if (DEBUG) Log.v(TAG, String.format("setFormat:size(%d,%d),fps=%d,bps=%d,iframe=%d",
+			mWidth, mHeight, mFrameRate, mBitRate, mIFrameIntervals));
 	}
 
 	@Override
@@ -164,7 +170,9 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
 	}
 
 	@Override
-	protected MediaCodec internal_configure(MediaCodec previous_codec, final MediaFormat format) throws IOException {
+	protected MediaCodec internal_configure(MediaCodec previous_codec,
+		final MediaFormat format) throws IOException {
+
 		if (DEBUG) Log.v(TAG, "internal_configure:");
 		format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);	// API >= 18
 		format.setInteger(MediaFormat.KEY_BIT_RATE, mBitRate > 0 ? mBitRate : calcBitRate());
@@ -213,7 +221,8 @@ public class TLMediaVideoEncoder extends TLMediaEncoder {
      * @param mimeType
      * @return return null if not found
      */
-    protected static final MediaCodecInfo selectVideoCodec(final String mimeType) {
+    @SuppressWarnings("deprecation")
+	protected static final MediaCodecInfo selectVideoCodec(final String mimeType) {
     	if (DEBUG) Log.v(TAG, "selectVideoCodec:");
 
     	// get the list of available codecs

@@ -136,6 +136,7 @@ public final class CameraGLView extends GLSurfaceView {
 		return mScaleMode;
 	}
 
+	@SuppressWarnings("SuspiciousNameCombination")
 	public void setVideoSize(final int width, final int height) {
 		if ((mRotation % 180) == 0) {
 			mVideoWidth = width;
@@ -410,6 +411,7 @@ public final class CameraGLView extends GLSurfaceView {
 	/**
 	 * Thread for asynchronous operation of camera preview
 	 */
+	@SuppressWarnings("deprecation")
 	private final class CameraThread extends Thread {
     	private final Object mReadyFence = new Object();
     	private CameraHandler mHandler;

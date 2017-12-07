@@ -24,6 +24,7 @@ package com.serenegiant.media;
  * All files in the folder are under this Apache License, Version 2.0.
 */
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.media.AudioFormat;
 import android.media.MediaCodec;
@@ -58,8 +59,9 @@ public abstract class AbstractTLMediaAudioEncoder extends TLMediaEncoder {
 	 * @param sample_rate default value is 44100(44.1kHz, 44.1KHz is only guarantee value on all devices)
 	 * @param bit_rate  default value is 64000(64kbps)
 	 */
-	public AbstractTLMediaAudioEncoder(final Context context, final String base_path, final MediaEncoderListener listener,
-									   final int sample_rate, final int bit_rate) {
+	public AbstractTLMediaAudioEncoder(final Context context, final String base_path,
+		final MediaEncoderListener listener,
+		final int sample_rate, final int bit_rate) {
 
 		super(context, base_path, 1, listener);
 		mSampleRate = sample_rate > 0 ? sample_rate : DEFAULT_SAMPLE_RATE;
@@ -89,7 +91,9 @@ public abstract class AbstractTLMediaAudioEncoder extends TLMediaEncoder {
 	}
 
 	@Override
-	protected MediaCodec internal_configure(MediaCodec codec, final MediaFormat format) throws IOException {
+	protected MediaCodec internal_configure(MediaCodec codec,
+		final MediaFormat format) throws IOException {
+
 		if (DEBUG) Log.v(TAG, "internal_configure:");
 		if (codec == null)
 			codec = MediaCodec.createEncoderByType(MIME_TYPE);
@@ -139,7 +143,8 @@ public abstract class AbstractTLMediaAudioEncoder extends TLMediaEncoder {
      * @param mimeType
      * @return
      */
-    private static final MediaCodecInfo selectAudioCodec(final String mimeType) {
+    @SuppressLint("LongLogTag")
+	private static final MediaCodecInfo selectAudioCodec(final String mimeType) {
     	if (DEBUG) Log.v("AbstractTLMediaAudioEncoder", "selectAudioCodec:");
 
     	MediaCodecInfo result = null;
@@ -152,7 +157,8 @@ LOOP:	for (int i = 0; i < numCodecs; i++) {
             }
             final String[] types = codecInfo.getSupportedTypes();
             for (int j = 0; j < types.length; j++) {
-            	if (DEBUG) Log.i("AbstractTLMediaAudioEncoder", "supportedType:" + codecInfo.getName() + ",MIME=" + types[j]);
+            	if (DEBUG) Log.i("AbstractTLMediaAudioEncoder",
+            		"supportedType:" + codecInfo.getName() + ",MIME=" + types[j]);
                 if (types[j].equalsIgnoreCase(mimeType)) {
                		result = codecInfo;
            			break LOOP;

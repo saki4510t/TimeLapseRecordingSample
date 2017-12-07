@@ -71,10 +71,10 @@ public class CameraFragment extends Fragment {
 	@Override
 	public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
 		final View rootView = inflater.inflate(R.layout.fragment_camera, container, false);
-		mCameraView = (CameraGLView)rootView.findViewById(R.id.cameraView);
+		mCameraView = rootView.findViewById(R.id.cameraView);
 		mCameraView.setVideoSize(1280, 720);
 		mCameraView.setOnTouchListener(mOnTouchListener);
-		mRecordButton = (ImageButton)rootView.findViewById(R.id.record_button);
+		mRecordButton = rootView.findViewById(R.id.record_button);
 		mRecordButton.setOnClickListener(mOnClickListener);
 		return rootView;
 	}

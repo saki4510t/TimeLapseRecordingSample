@@ -45,6 +45,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
+import java.util.Locale;
 import java.util.concurrent.LinkedBlockingDeque;
 
 /**
@@ -336,20 +337,20 @@ public abstract class TLMediaEncoder {
 	}
 
 	private final void setRequest(final int request) {
-		mRequestQueue.offer(Integer.valueOf(request));
+		mRequestQueue.offer(request);
 	}
 
 	private final void setRequestFirst(final int request) {
-		mRequestQueue.offerFirst(Integer.valueOf(request));
+		mRequestQueue.offerFirst(request);
 	}
 
 	private final void removeRequest(final int request) {
-		for (; mRequestQueue.remove(Integer.valueOf(request)) ;);
+		for (; mRequestQueue.remove(request) ;);
 	}
 
 	private final void setRequestAndWait(final int request) throws Exception {
 		synchronized (mSync) {
-			mRequestQueue.offer(Integer.valueOf(request));
+			mRequestQueue.offer(request);
 			try {
 				mSync.wait();
 				if (mCurrentException != null)
@@ -818,7 +819,8 @@ public abstract class TLMediaEncoder {
 
 		@Override
 		public String toString() {
-			return String.format("TLMediaFrameHeader(sequence=%d,frameNumber=%d,presentationTimeUs=%d,size=%d,flags=%d)",
+			return String.format(Locale.US,
+				"TLMediaFrameHeader(sequence=%d,frameNumber=%d,presentationTimeUs=%d,size=%d,flags=%d)",
 				sequence, frameNumber, presentationTimeUs, size, flags);
 		}
 	}

@@ -83,7 +83,9 @@ public class TLMediaMovieBuilder {
 	 * @param movie_name directory name where intermediate files exist
 	 * @throws IOException
 	 */
-	public TLMediaMovieBuilder(final Context context, final String movie_name) throws IOException {
+	public TLMediaMovieBuilder(final Context context,
+		final String movie_name) throws IOException {
+
 		mBaseDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), movie_name);
 		mOutputPath  = getCaptureFile(Environment.DIRECTORY_MOVIES, ".mp4").toString();
 	}
